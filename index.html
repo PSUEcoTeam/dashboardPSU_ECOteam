@@ -26,14 +26,16 @@
                     <span class="lap-text">LAP</span>
                     <span class="lap-number" id="lapCounter">0/4</span>
                 </div>
+                <div class="ai-status-container">
+                    <div class="ai-status-circle" id="aiStatusCircle">
+                        <div class="ai-status-glow"></div>
+                    </div>
+                    <div class="ai-cue-display" id="aiCueDisplay">--</div>
+                </div>
                 <div class="header-buttons">
-                    <button id="testMqttBtn" class="test-btn">Test MQTT</button>
+                    <button id="startSessionBtn" class="start-btn">Start Session</button>
+                    <button id="endSessionBtn" class="end-btn" disabled>End Session</button>
                     <button id="resetDistanceBtn" class="reset-btn" title="Reset distance to 0">Reset Distance</button>
-                    <div class="header-buttons">
-                        <button id="startLogBtn" class="log-btn">Start Logging</button>
-                        <button id="stopLogBtn" class="log-btn" disabled>Stop & Download</button>
-                      </div>
-                      
                 </div>
             </div>
         </header>
@@ -42,11 +44,9 @@
         <div class="view-toggle-section">
             <div class="toggle-container">
                 <button id="liveTelemetryBtn" class="toggle-btn active" data-view="telemetry">
-                    <span class="toggle-icon">📊</span>
                     <span class="toggle-text">Live Telemetry</span>
                 </button>
                 <button id="graphsBtn" class="toggle-btn" data-view="graphs">
-                    <span class="toggle-icon">📈</span>
                     <span class="toggle-text">Analytics Graphs</span>
                 </button>
             </div>
@@ -78,11 +78,11 @@
                 <!-- Combined Race Telemetry & Electrical Card -->
                 <div class="telemetry-card combined-card">
                     <div class="card-header">
-                        <h3>Race Telemetry & Electrical</h3>
+                        <h3>Race Telemetry</h3>
                     </div>
                     <div class="card-content">
                         <!-- Row 1: Avg Speed, Remaining Time, Distance -->
-                     o   <div class="metric-row">
+                        <div class="metric-row">
                             <div class="metric-item">
                                 <div class="metric-value" id="avgSpeed">0</div>
                                 <div class="metric-unit">km/h</div>
@@ -117,8 +117,8 @@
                                 <div class="metric-label">Current</div>
                             </div>
                         </div>
-                        <!-- Row 3: Power, Total Energy, Efficiency -->
-                        <div class="metric-row">
+                        <!-- Row 3: Power, Total Energy, RPM, Efficiency -->
+                        <div class="metric-row metric-row-4">
                             <div class="metric-item">
                                 <div class="metric-value" id="power">0</div>
                                 <div class="metric-unit">W</div>
@@ -138,19 +138,6 @@
                                 <div class="metric-value" id="efficiency">0</div>
                                 <div class="metric-unit">km/kWh</div>
                                 <div class="metric-label">Efficiency</div>
-                            </div>
-                        </div>
-                        <!-- Row 3: GPS Coordinates (2-column layout) -->
-                        <div class="metric-row gps-row">
-                            <div class="metric-item">
-                                <div class="metric-value" id="gpsLongitude">0.000000</div>
-                                <div class="metric-unit">°</div>
-                                <div class="metric-label">GPS Longitude</div>
-                            </div>
-                            <div class="metric-item">
-                                <div class="metric-value" id="gpsLatitude">0.000000</div>
-                                <div class="metric-unit">°</div>
-                                <div class="metric-label">GPS Latitude</div>
                             </div>
                         </div>
                     </div>
@@ -226,11 +213,6 @@
                     <div class="graph-title">Acceleration vs Speed</div>
                     <div id="accelerationGraph" class="plotly-graph"></div>
                 </div>
-                <div id="trackGraph" class="plotly-graph"></div>
-<div id="currentDistGraph" class="plotly-graph"></div>
-<div id="speedDistGraph" class="plotly-graph"></div>
-<div id="accelSpeedGraph" class="plotly-graph"></div>
-
             </div>
         </div>
 

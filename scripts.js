@@ -15,7 +15,7 @@ const TOPIC     = "car/telemetry";
 
 const TRACK_LAP_KM  = 3.7;   // Lusail short lap
 const LAPS_TARGET   = 4;
-const PACKET_MIN_MS = 90;    // UI throttle (≤ 11 FPS)
+const PACKET_MIN_MS = 50;    // UI throttle (≤ 20 FPS) - faster updates for real-time feel
 
 /* ====== DOM ====== */
 const el = id => document.getElementById(id);
@@ -78,7 +78,11 @@ const state = {
   // AI cues and response
   aiCue: null,
   aiCueTime: null,
-  driverResponseGood: null
+  driverResponseGood: null,
+  // Packet rate tracking
+  packetCount: 0,
+  packetRateStartTime: null,
+  lastPacketRateLog: 0
 };
 function clampLen(arr, max) {
   if (arr.length > max) arr.splice(0, arr.length - max);
@@ -87,69 +91,225 @@ function clampLen(arr, max) {
 let map, marker;
 
 function initMap() {
-  // Start with a neutral location (will be updated by telemetry)
-  const startPos = [0, 0];
-
-  map = L.map('map').setView(startPos, 2); // zoomed out initially
-
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; OpenStreetMap contributors'
-  }).addTo(map);
-
-  marker = L.marker(startPos).addTo(map);
-  if (navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition(pos => {
-      const coords = [pos.coords.latitude, pos.coords.longitude];
-      map.setView(coords, 16);
-      marker.setLatLng(coords);
-    });
+  const mapElement = document.getElementById('map');
+  if (!mapElement) {
+    console.error("❌ Map element 'map' not found in HTML!");
+    return;
   }
   
+  // Start with a default location (will be updated by browser geolocation)
+  const defaultPos = [24.7136, 46.6753]; // Default fallback location
+  const defaultZoom = 13;
+
+  try {
+    map = L.map('map').setView(defaultPos, defaultZoom);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Create a visible red marker (will be positioned by browser geolocation)
+    marker = L.marker(defaultPos, {
+      icon: L.icon({
+        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+        iconSize: [25, 41],
+        iconAnchor: [12, 41],
+        popupAnchor: [1, -34],
+        shadowSize: [41, 41]
+      })
+    }).addTo(map);
+    
+    // Track if we've received GPS data from MQTT yet
+    map.hasInitialGPS = false;
+    
+    // Get browser's current location for initial pin
+    if (navigator.geolocation) {
+      console.log("📍 Requesting browser location for initial pin...");
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const browserLat = position.coords.latitude;
+          const browserLon = position.coords.longitude;
+          const browserPos = [browserLat, browserLon];
+          
+          // Update map and marker to browser's location
+          map.setView(browserPos, 16);
+          marker.setLatLng(browserPos);
+          marker.bindPopup("📍 Your Current Location<br>Waiting for GPS data from MQTT...").openPopup();
+          
+          console.log(`📍 Browser location received: ${browserLat.toFixed(6)}, ${browserLon.toFixed(6)}`);
+          console.log("🗺️ Map centered on your location - will update from MQTT GPS data");
+        },
+        (error) => {
+          console.warn("⚠️ Browser geolocation error:", error.message);
+          console.log("📍 Using default location - will update from MQTT GPS data");
+          marker.bindPopup("📍 Default Location<br>Waiting for GPS data from MQTT...").openPopup();
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 5000,
+          maximumAge: 0
+        }
+      );
+    } else {
+      console.warn("⚠️ Browser geolocation not supported");
+      marker.bindPopup("📍 Default Location<br>Waiting for GPS data from MQTT...").openPopup();
+    }
+    
+    console.log("🗺️ Map initialized - waiting for browser location, then MQTT GPS updates");
+  } catch (error) {
+    console.error("❌ Error initializing map:", error);
+  }
 }
 
 
 /* ====== MQTT ====== */
 let client;
 function mqttConnect() {
+  // Disconnect existing client if any
+  if (client) {
+    client.end();
+    client = null;
+  }
+  
   client = mqtt.connect(MQTT_URL, {
     username: MQTT_USER,
     password: MQTT_PASS,
-    clean: true,
-    reconnectPeriod: 2000
+    clean: true,  // Start with clean session (no old messages)
+    reconnectPeriod: 2000,
+    clientId: 'jm_dashboard_' + Math.random().toString(16).substr(2, 8) // Unique client ID
   });
 
   client.on("connect", () => {
     console.log("✅ Connected to HiveMQ Cloud");
-    client.subscribe(TOPIC, err => {
-      if (err) console.error("Subscribe error:", err);
+    // Subscribe with qos 0 and no retained messages
+    client.subscribe(TOPIC, { qos: 0 }, (err) => {
+      if (err) {
+        console.error("Subscribe error:", err);
+      } else {
+        console.log(`📡 Subscribed to topic: ${TOPIC}`);
+        console.log("⏳ Waiting for new MQTT messages...");
+      }
     });
   });
 
-  client.on("message", (topic, payload) => {
+  client.on("message", (topic, payload, packet) => {
     if (topic !== TOPIC) return;
+    
+    // Log received message info
+    console.log(`📨 Received MQTT message on ${topic}:`, {
+      retained: packet.retain,
+      qos: packet.qos,
+      payloadLength: payload.length,
+      timestamp: new Date().toISOString()
+    });
+    
+    // IGNORE RETAINED MESSAGES - only process new messages
+    if (packet.retain) {
+      console.log("⚠️ Ignoring RETAINED message (old/cached data)");
+      return;
+    }
+    
     let data;
-    try { data = JSON.parse(payload.toString()); }
-    catch(e){ console.error("Bad packet", e); return; }
+    try { 
+      data = JSON.parse(payload.toString());
+      console.log("📊 Parsed NEW data:", data);
+    }
+    catch(e){ 
+      console.error("❌ Bad packet JSON:", e, "Raw:", payload.toString());
+      return; 
+    }
+    
     ingestTelemetry(data);
   });
 
-  client.on("error", console.error);
+  client.on("error", (err) => {
+    console.error("❌ MQTT error:", err);
+  });
+  
+  client.on("offline", () => {
+    console.log("⚠️ MQTT client went offline");
+  });
+}
+
+/* ====== MAP GPS UPDATE ====== */
+function updateMapFromGPS(lat, lon) {
+  // Check for valid GPS coordinates (not zero, and within reasonable bounds)
+  const isValidGPS = lat !== 0 && lon !== 0 && 
+                     Math.abs(lat) <= 90 && Math.abs(lon) <= 180 &&
+                     !isNaN(lat) && !isNaN(lon);
+  
+  if (!map || !marker) {
+    if (isValidGPS) {
+      console.warn("⚠️ Map or marker not initialized - cannot update GPS");
+    }
+    return;
+  }
+  
+  if (isValidGPS) {
+    const pos = [lat, lon];
+    
+    // Log GPS updates for debugging
+    console.log(`📍 GPS received: lat=${lat.toFixed(6)}, lon=${lon.toFixed(6)}`);
+    
+    // Only pan/zoom on first valid GPS reading, then just update marker position
+    if (!map.hasInitialGPS) {
+      map.setView(pos, 16); // Zoom in on first GPS reading
+      map.hasInitialGPS = true;
+      marker.closePopup(); // Close the initial browser location popup
+      console.log(`🗺️ Map now tracking MQTT GPS: ${lat.toFixed(6)}, ${lon.toFixed(6)}`);
+    }
+    
+    // Always update marker position immediately (even if map hasn't panned)
+    try {
+      marker.setLatLng(pos);
+      
+      // Smoothly pan to new location if it's moved significantly
+      const currentCenter = map.getCenter();
+      const distance = map.distance(currentCenter, pos);
+      if (distance > 50) { // Only pan if moved more than 50 meters
+        map.panTo(pos, { animate: true, duration: 0.5 });
+      }
+    } catch (error) {
+      console.error("❌ Error updating marker:", error);
+    }
+  } else if (lat !== 0 || lon !== 0) {
+    // Only warn if we have non-zero but invalid coordinates
+    console.warn(`⚠️ Invalid GPS coordinates: lat=${lat}, lon=${lon}`);
+  }
 }
 
 /* ====== INGEST TELEMETRY ====== */
 function num(x){ const v = Number(x); return Number.isFinite(v) ? v : 0; }
 
 function ingestTelemetry(d) {
+  const now = performance.now();
+  
   // --- VOLTAGE FILTER: Reject packets with voltage >= 60V ---
   const voltage = num(d.voltage);
   if (voltage >= 60) {
-    console.warn(`⚠️ Rejected packet: voltage ${voltage}V >= 60V (invalid reading)`);
     return; // Ignore this packet completely - don't process, don't log, don't display
   }
-
-  const now = performance.now();
-  if (state.t0 === null) state.t0 = now;
+  
+  // Initialize timing on first valid packet
+  if (state.t0 === null) {
+    state.t0 = now;
+    state.packetRateStartTime = now;
+    state.lastPacketRateLog = now;
+    console.log("🎬 First MQTT packet received - starting data collection");
+  }
+  
+  // --- Packet rate tracking ---
+  state.packetCount++;
+  
+  // Log packet rate every 5 seconds
+  if (now - state.lastPacketRateLog > 5000) {
+    const elapsed = (now - state.packetRateStartTime) / 1000; // seconds
+    const rate = state.packetCount / elapsed;
+    console.log(`📊 Packet rate: ${rate.toFixed(1)} packets/second (${state.packetCount} total packets, ${logData.length} logged)`);
+    state.lastPacketRateLog = now;
+  }
   const dtMs = state.lastTsMs == null ? 0 : (now - state.lastTsMs);
   state.lastTsMs = now;
   const dtH = dtMs / 3600000; // ms → hours
@@ -161,8 +321,12 @@ function ingestTelemetry(d) {
   state.speed  = num(d.speed);
   state.rpm    = num(d.rpm);
   state.distKmAbs = num(d.distance_km);
-  state.lon    = num(d.longitude);
-  state.lat    = num(d.latitude);
+  // Parse GPS coordinates - support multiple field name variants
+  state.lon = num(d.longitude || d.lon || d.lng || d.gps_longitude);
+  state.lat = num(d.latitude || d.lat || d.gps_latitude);
+  
+  // Update map immediately when valid GPS coordinates are received
+  updateMapFromGPS(state.lat, state.lon);
   
   // --- AI Cue from MQTT ---
   if (d.ai_cue !== undefined && d.ai_cue !== null && d.ai_cue !== "") {
@@ -202,6 +366,7 @@ function ingestTelemetry(d) {
   clampLen(state.series.power, state.maxPoints);
 
   // --- Logging to CSV (if enabled) ---
+  // IMPORTANT: Log EVERY packet, no throttling for logging
   if (logging) {
     const nowISO = new Date().toISOString();
     const energyWhRel = Math.max(0, state.energyWhAbs - state.baseEnergyWh);
@@ -310,22 +475,36 @@ function evaluateDriverResponse() {
 }
 
 /* ====== RENDER LOOP ====== */
-let rafPending = false, lastPaintMs = 0;
+let rafPending = false, lastPaintMs = 0, needsUpdate = false;
 function requestFrame(){
-  if (rafPending) return;
+  needsUpdate = true; // Mark that we have new data to display
+  if (rafPending) return; // Already have a frame scheduled
   rafPending = true;
   requestAnimationFrame(paint);
 }
 function paint(){
   rafPending = false;
   const now = performance.now();
-  if (now - lastPaintMs < PACKET_MIN_MS) return;
+  
+  // Throttle painting, but always paint the latest state when we do paint
+  if (now - lastPaintMs < PACKET_MIN_MS) {
+    // Too soon to paint, but schedule another paint if we have updates
+    if (needsUpdate) {
+      rafPending = true;
+      requestAnimationFrame(paint);
+    }
+    return;
+  }
+  
   lastPaintMs = now;
+  needsUpdate = false; // We're painting now, clear the flag
 
   // Only update display if we have received real MQTT data (t0 is set)
   // This prevents showing dummy/initialized values on page load
-  if (state.t0 === null) {
-    // No MQTT data received yet - keep showing zeros (initial state)
+  // t0 is only set when first MQTT packet is received in ingestTelemetry()
+  if (state.t0 === null || !state.t0) {
+    // No MQTT data received yet - do not update display
+    // Keep showing initial zeros from HTML/initializeDisplay()
     return;
   }
 
@@ -356,11 +535,6 @@ function paint(){
 
   // Laps
   lapCounterEl.textContent = `${Math.min(state.laps, LAPS_TARGET)}/${LAPS_TARGET}`;
-  if (map && marker && state.lat && state.lon) {
-    const pos = [state.lat, state.lon];
-    marker.setLatLng(pos);  // Move marker to new location
-    map.panTo(pos, { animate: true, duration: 0.5 });
-  }
   
   // Graph update
   updateGraphs();
@@ -496,19 +670,17 @@ startSessionBtn?.addEventListener("click", () => {
       if (client && client.connected) {
         // Start logging
         logging = true;
-        logStartTime = performance.now();
         logData = [];
         startSessionBtn.disabled = true;
         endSessionBtn.disabled = false;
         alert("✅ Session started! MQTT connected and logging active.");
-    } else {
+      } else {
         alert("❌ Failed to connect to MQTT. Please check your connection.");
       }
     }, 2000);
       } else {
     // Already connected, just start logging
     logging = true;
-    logStartTime = performance.now();
     logData = [];
     startSessionBtn.disabled = true;
     endSessionBtn.disabled = false;
@@ -565,7 +737,6 @@ graphsBtn.addEventListener("click", () => {
 /* ====== CSV LOGGING ====== */
 let logging = false;
 let logData = [];
-let logStartTime = 0;
 
 
 function toCSV(dataArray) {
@@ -575,82 +746,30 @@ function toCSV(dataArray) {
   return [headers, ...rows].join("\n");
 }
 
-/* ====== AI CUE TESTING ====== */
-// Test function to simulate AI cues and driver responses
-function testAICue(cueName, simulateGoodResponse = true) {
-  console.log(`🧪 Testing AI Cue: ${cueName}, Good Response: ${simulateGoodResponse}`);
-  
-  // Update cue display
-  updateAICueDisplay(cueName);
-  
-  // Simulate telemetry based on cue and response quality
-  const originalSpeed = state.speed;
-  const originalPower = state.p;
-  const originalCurrent = state.i;
-  
-  if (simulateGoodResponse) {
-    // Simulate good driver response
-    switch(cueName) {
-      case 'throttle':
-      case 'accelerate':
-        state.p = 500;  // High power = accelerating
-        state.i = 10;   // High current
-        state.speed = Math.max(originalSpeed, 30); // Speed increasing
-        break;
-      case 'coast':
-      case 'maintain':
-        state.p = 20;   // Low power = coasting
-        state.i = 0.05; // Low current
-        state.speed = originalSpeed; // Maintaining speed
-        break;
-      case 'stop':
-      case 'brake':
-        state.p = 5;    // Very low power = stopping
-        state.i = 0.01; // Minimal current
-        state.speed = Math.max(0, originalSpeed - 5); // Speed decreasing
-        break;
-    }
-    } else {
-    // Simulate bad driver response (opposite of what cue suggests)
-    switch(cueName) {
-      case 'throttle':
-      case 'accelerate':
-        state.p = 10;   // Low power when should accelerate = BAD
-        state.i = 0.1;
-        state.speed = Math.max(0, originalSpeed - 2);
-        break;
-      case 'coast':
-      case 'maintain':
-        state.p = 800;  // High power when should coast = BAD
-        state.i = 15;
-        state.speed = originalSpeed + 10;
-        break;
-      case 'stop':
-      case 'brake':
-        state.p = 600;  // High power when should stop = BAD
-        state.i = 12;
-        state.speed = originalSpeed + 5;
-        break;
-    }
-  }
-  
-  // Evaluate and update display
-  state.aiCue = cueName;
-  state.aiCueTime = performance.now();
-  evaluateDriverResponse();
-  
-  // Restore original values after 3 seconds
-  setTimeout(() => {
-    state.p = originalPower;
-    state.i = originalCurrent;
-    state.speed = originalSpeed;
-  }, 3000);
-}
-
-// Make test function available in browser console
-window.testAICue = testAICue;
 
 /* ====== BOOT ====== */
+// Initialize display to zeros (will only update when real MQTT data arrives)
+function initializeDisplay() {
+  if (mainSpdEl) mainSpdEl.textContent = '0';
+  if (mainEffEl) mainEffEl.textContent = '0';
+  if (mainTimerEl) mainTimerEl.textContent = '00:00';
+  if (avgSpeedEl) avgSpeedEl.textContent = '0';
+  if (remainingEl) remainingEl.textContent = '35:00';
+  if (distanceEl) distanceEl.textContent = '0';
+  if (consumptionEl) consumptionEl.textContent = '0';
+  if (voltageEl) voltageEl.textContent = '0';
+  if (currentEl) currentEl.textContent = '0';
+  if (powerEl) powerEl.textContent = '0';
+  if (totalEnergyEl) totalEnergyEl.textContent = '0';
+  if (rpmEl) rpmEl.textContent = '0';
+  if (efficiencyEl) efficiencyEl.textContent = '0';
+  if (gpsLonEl) gpsLonEl.textContent = '0.000000';
+  if (gpsLatEl) gpsLatEl.textContent = '0.000000';
+  if (lapCounterEl) lapCounterEl.textContent = '0/4';
+}
+
+initializeDisplay();
+
 mqttConnect();
 initMap();
 
@@ -661,21 +780,3 @@ if (aiStatusCircle) {
 if (aiCueDisplay) {
   aiCueDisplay.textContent = '--';
 }
-
-// Add test instructions to console
-console.log(`
-╔══════════════════════════════════════════════════════════════╗
-║  AI CUE SYSTEM - TESTING INSTRUCTIONS                       ║
-╠══════════════════════════════════════════════════════════════╣
-║                                                              ║
-║  To test AI cues in browser console, use:                    ║
-║                                                              ║
-║  testAICue('throttle', true)   - Good throttle response     ║
-║  testAICue('coast', true)      - Good coast response        ║
-║  testAICue('stop', true)       - Good stop response         ║
-║  testAICue('throttle', false)  - Bad throttle response      ║
-║  testAICue('coast', false)     - Bad coast response         ║
-║  testAICue('stop', false)      - Bad stop response          ║
-║                                                              ║
-╚══════════════════════════════════════════════════════════════╝
-`);
