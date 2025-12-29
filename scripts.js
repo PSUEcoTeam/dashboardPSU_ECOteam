@@ -22,10 +22,11 @@ const el = id => document.getElementById(id);
 
 // Header + Controls
 const lapCounterEl      = el("lapCounter");
-const testBtn           = el("testMqttBtn");
+const startSessionBtn   = el("startSessionBtn");
+const endSessionBtn     = el("endSessionBtn");
 const resetDistanceBtn  = el("resetDistanceBtn");
-const startLogBtn       = el("startLogBtn");
-const stopLogBtn        = el("stopLogBtn");
+const aiStatusCircle    = el("aiStatusCircle");
+const aiCueDisplay      = el("aiCueDisplay");
 
 // View toggle
 const liveBtn   = el("liveTelemetryBtn");
@@ -73,7 +74,11 @@ const state = {
   laps: 0,
   // graph buffers
   series: { t: [], speed: [], current: [], power: [] },
-  maxPoints: 3000
+  maxPoints: 3000,
+  // AI cues and response
+  aiCue: null,
+  aiCueTime: null,
+  driverResponseGood: null
 };
 function clampLen(arr, max) {
   if (arr.length > max) arr.splice(0, arr.length - max);
@@ -136,14 +141,21 @@ function mqttConnect() {
 function num(x){ const v = Number(x); return Number.isFinite(v) ? v : 0; }
 
 function ingestTelemetry(d) {
+  // --- VOLTAGE FILTER: Reject packets with voltage >= 60V ---
+  const voltage = num(d.voltage);
+  if (voltage >= 60) {
+    console.warn(`⚠️ Rejected packet: voltage ${voltage}V >= 60V (invalid reading)`);
+    return; // Ignore this packet completely - don't process, don't log, don't display
+  }
+
   const now = performance.now();
   if (state.t0 === null) state.t0 = now;
   const dtMs = state.lastTsMs == null ? 0 : (now - state.lastTsMs);
   state.lastTsMs = now;
   const dtH = dtMs / 3600000; // ms → hours
 
-  // --- Raw values from MQTT ---
-  state.v      = num(d.voltage);
+  // --- Raw values from MQTT (only process if voltage < 60V) ---
+  state.v      = voltage;
   state.i      = num(d.current);
   state.p      = num(d.power);
   state.speed  = num(d.speed);
@@ -151,6 +163,18 @@ function ingestTelemetry(d) {
   state.distKmAbs = num(d.distance_km);
   state.lon    = num(d.longitude);
   state.lat    = num(d.latitude);
+  
+  // --- AI Cue from MQTT ---
+  if (d.ai_cue !== undefined && d.ai_cue !== null && d.ai_cue !== "") {
+    state.aiCue = String(d.ai_cue).toLowerCase().trim();
+    state.aiCueTime = now;
+    updateAICueDisplay(state.aiCue);
+  }
+  
+  // --- Evaluate driver response to AI cue ---
+  if (state.aiCue) {
+    evaluateDriverResponse();
+  }
 
   // --- Integrate energy (Wh = W × h) ---
   if (dtH > 0 && state.p > -1e6 && state.p < 1e6) {
@@ -205,6 +229,86 @@ function ingestTelemetry(d) {
   requestFrame();
 }
 
+/* ====== AI CUE & DRIVER RESPONSE ====== */
+function updateAICueDisplay(cue) {
+  if (!aiCueDisplay) return;
+  
+  const cueMap = {
+    'throttle': 'THROTTLE',
+    'coast': 'COAST',
+    'stop': 'STOP',
+    'brake': 'BRAKE',
+    'accelerate': 'ACCELERATE',
+    'maintain': 'MAINTAIN'
+  };
+  
+  const displayText = cueMap[cue] || cue.toUpperCase();
+  aiCueDisplay.textContent = displayText;
+  
+  // Remove all cue classes
+  aiCueDisplay.className = 'ai-cue-display';
+  
+  // Add appropriate class
+  if (cue === 'throttle' || cue === 'accelerate') {
+    aiCueDisplay.classList.add('cue-throttle');
+  } else if (cue === 'coast' || cue === 'maintain') {
+    aiCueDisplay.classList.add('cue-coast');
+  } else if (cue === 'stop') {
+    aiCueDisplay.classList.add('cue-stop');
+  } else if (cue === 'brake') {
+    aiCueDisplay.classList.add('cue-brake');
+  }
+}
+
+function evaluateDriverResponse() {
+  if (!state.aiCue || !aiStatusCircle) return;
+  
+  const cue = state.aiCue;
+  let isGood = false;
+  
+  // Evaluate based on cue type and current telemetry
+  switch(cue) {
+    case 'throttle':
+    case 'accelerate':
+      // Good if power/current is increasing or speed is increasing
+      isGood = state.p > 50 || state.i > 0.1 || state.speed > 5;
+      break;
+      
+    case 'coast':
+    case 'maintain':
+      // Good if power is low (coasting) or maintaining steady speed
+      isGood = state.p < 100 && state.i < 0.2;
+      break;
+      
+    case 'stop':
+    case 'brake':
+      // Good if power is very low or zero (stopping)
+      isGood = state.p < 10 && state.speed < 2;
+      break;
+      
+    default:
+      isGood = true; // Neutral for unknown cues
+  }
+  
+  // Update status circle
+  state.driverResponseGood = isGood;
+  aiStatusCircle.className = 'ai-status-circle';
+  
+  if (isGood) {
+    aiStatusCircle.classList.add('good');
+      } else {
+    aiStatusCircle.classList.add('bad');
+  }
+  
+  // If no cue received for 5 seconds, show neutral
+  if (state.aiCueTime && (performance.now() - state.aiCueTime) > 5000) {
+    aiStatusCircle.classList.remove('good', 'bad');
+    aiStatusCircle.classList.add('neutral');
+    aiCueDisplay.textContent = '--';
+    aiCueDisplay.className = 'ai-cue-display';
+  }
+}
+
 /* ====== RENDER LOOP ====== */
 let rafPending = false, lastPaintMs = 0;
 function requestFrame(){
@@ -217,6 +321,13 @@ function paint(){
   const now = performance.now();
   if (now - lastPaintMs < PACKET_MIN_MS) return;
   lastPaintMs = now;
+
+  // Only update display if we have received real MQTT data (t0 is set)
+  // This prevents showing dummy/initialized values on page load
+  if (state.t0 === null) {
+    // No MQTT data received yet - keep showing zeros (initial state)
+    return;
+  }
 
   const distKmRel   = Math.max(0, state.distKmAbs - state.baseDistKm);
   const energyWhRel = Math.max(0, state.energyWhAbs - state.baseEnergyWh);
@@ -290,7 +401,7 @@ function ensureGraphs(){
     autosize: true,
     paper_bgcolor: "transparent",
     plot_bgcolor: "transparent",
-    showlegend: false
+      showlegend: false
   };
 
   Plotly.newPlot(speedGraphDiv, [{
@@ -375,13 +486,69 @@ resetDistanceBtn?.addEventListener("click", () => {
   setTimeout(() => resetDistanceBtn.textContent = "Reset Distance", 1500);
 });
 
-testBtn?.addEventListener("click", () => {
-  if (!client) return alert("MQTT client not initialized.");
-  if (client.connected) alert(" MQTT connected to HiveMQ Cloud successfully!");
-  else {
-    alert(" MQTT not connected.\nAttempting to reconnect...");
-    client.reconnect();
+// Start Session: Connect MQTT and start logging
+startSessionBtn?.addEventListener("click", () => {
+  // Connect MQTT if not connected
+  if (!client || !client.connected) {
+    mqttConnect();
+    // Wait a moment for connection
+    setTimeout(() => {
+      if (client && client.connected) {
+        // Start logging
+        logging = true;
+        logStartTime = performance.now();
+        logData = [];
+        startSessionBtn.disabled = true;
+        endSessionBtn.disabled = false;
+        alert("✅ Session started! MQTT connected and logging active.");
+    } else {
+        alert("❌ Failed to connect to MQTT. Please check your connection.");
+      }
+    }, 2000);
+      } else {
+    // Already connected, just start logging
+    logging = true;
+    logStartTime = performance.now();
+    logData = [];
+    startSessionBtn.disabled = true;
+    endSessionBtn.disabled = false;
+    alert("✅ Logging started!");
   }
+});
+
+// End Session: Stop logging and save file
+endSessionBtn?.addEventListener("click", () => {
+  if (!logging) {
+    alert("⚠️ No active logging session.");
+      return;
+    }
+    
+  // Prompt for filename
+  const defaultName = `telemetry_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5)}`;
+  const fileName = prompt("Enter filename to save (without .csv extension):", defaultName);
+  
+  if (!fileName || fileName.trim() === "") {
+    alert("❌ Filename is required. Session not ended.");
+    return; // User cancelled or entered empty name
+  }
+  
+  const cleanFileName = fileName.trim().replace(/[^a-zA-Z0-9_-]/g, '_'); // Sanitize filename
+  
+  logging = false;
+  startSessionBtn.disabled = false;
+  endSessionBtn.disabled = true;
+
+  const csv = toCSV(logData);
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${cleanFileName}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+
+  alert(`📁 Session ended! Log saved as ${cleanFileName}.csv`);
 });
 graphsBtn.addEventListener("click", () => {
   graphsBtn.classList.add("active");
@@ -400,40 +567,6 @@ let logging = false;
 let logData = [];
 let logStartTime = 0;
 
-// Start logging
-startLogBtn?.addEventListener("click", () => {
-  const fileName = prompt("Enter file name for log (without .csv):");
-  if (!fileName) return;
-
-  logging = true;
-  logStartTime = performance.now();
-  logData = [];
-  startLogBtn.disabled = true;
-  stopLogBtn.disabled = false;
-  startLogBtn.dataset.filename = fileName;
-  alert("✅ Logging started!");
-});
-
-// Stop logging & download
-stopLogBtn?.addEventListener("click", () => {
-  if (!logging) return;
-  logging = false;
-  startLogBtn.disabled = false;
-  stopLogBtn.disabled = true;
-
-  const fileName = startLogBtn.dataset.filename || "telemetry_log";
-  const csv = toCSV(logData);
-  const blob = new Blob([csv], { type: "text/csv" });
-  const url = URL.createObjectURL(blob);
-
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${fileName}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
-
-  alert("📁 Log saved as " + fileName + ".csv");
-});
 
 function toCSV(dataArray) {
   if (!dataArray.length) return "";
@@ -442,6 +575,107 @@ function toCSV(dataArray) {
   return [headers, ...rows].join("\n");
 }
 
+/* ====== AI CUE TESTING ====== */
+// Test function to simulate AI cues and driver responses
+function testAICue(cueName, simulateGoodResponse = true) {
+  console.log(`🧪 Testing AI Cue: ${cueName}, Good Response: ${simulateGoodResponse}`);
+  
+  // Update cue display
+  updateAICueDisplay(cueName);
+  
+  // Simulate telemetry based on cue and response quality
+  const originalSpeed = state.speed;
+  const originalPower = state.p;
+  const originalCurrent = state.i;
+  
+  if (simulateGoodResponse) {
+    // Simulate good driver response
+    switch(cueName) {
+      case 'throttle':
+      case 'accelerate':
+        state.p = 500;  // High power = accelerating
+        state.i = 10;   // High current
+        state.speed = Math.max(originalSpeed, 30); // Speed increasing
+        break;
+      case 'coast':
+      case 'maintain':
+        state.p = 20;   // Low power = coasting
+        state.i = 0.05; // Low current
+        state.speed = originalSpeed; // Maintaining speed
+        break;
+      case 'stop':
+      case 'brake':
+        state.p = 5;    // Very low power = stopping
+        state.i = 0.01; // Minimal current
+        state.speed = Math.max(0, originalSpeed - 5); // Speed decreasing
+        break;
+    }
+    } else {
+    // Simulate bad driver response (opposite of what cue suggests)
+    switch(cueName) {
+      case 'throttle':
+      case 'accelerate':
+        state.p = 10;   // Low power when should accelerate = BAD
+        state.i = 0.1;
+        state.speed = Math.max(0, originalSpeed - 2);
+        break;
+      case 'coast':
+      case 'maintain':
+        state.p = 800;  // High power when should coast = BAD
+        state.i = 15;
+        state.speed = originalSpeed + 10;
+        break;
+      case 'stop':
+      case 'brake':
+        state.p = 600;  // High power when should stop = BAD
+        state.i = 12;
+        state.speed = originalSpeed + 5;
+        break;
+    }
+  }
+  
+  // Evaluate and update display
+  state.aiCue = cueName;
+  state.aiCueTime = performance.now();
+  evaluateDriverResponse();
+  
+  // Restore original values after 3 seconds
+  setTimeout(() => {
+    state.p = originalPower;
+    state.i = originalCurrent;
+    state.speed = originalSpeed;
+  }, 3000);
+}
+
+// Make test function available in browser console
+window.testAICue = testAICue;
+
 /* ====== BOOT ====== */
 mqttConnect();
 initMap();
+
+// Initialize AI status display
+if (aiStatusCircle) {
+  aiStatusCircle.classList.add('neutral');
+}
+if (aiCueDisplay) {
+  aiCueDisplay.textContent = '--';
+}
+
+// Add test instructions to console
+console.log(`
+╔══════════════════════════════════════════════════════════════╗
+║  AI CUE SYSTEM - TESTING INSTRUCTIONS                       ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║  To test AI cues in browser console, use:                    ║
+║                                                              ║
+║  testAICue('throttle', true)   - Good throttle response     ║
+║  testAICue('coast', true)      - Good coast response        ║
+║  testAICue('stop', true)       - Good stop response         ║
+║  testAICue('throttle', false)  - Bad throttle response      ║
+║  testAICue('coast', false)     - Bad coast response         ║
+║  testAICue('stop', false)      - Bad stop response          ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+`);
