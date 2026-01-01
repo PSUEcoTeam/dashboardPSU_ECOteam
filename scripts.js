@@ -12,6 +12,8 @@ const MQTT_URL  = "wss://8fac0c92ea0a49b8b56f39536ba2fd78.s1.eu.hivemq.cloud:888
 const MQTT_USER = "ShellJM";
 const MQTT_PASS = "psuEcoteam1st";
 const TOPIC     = "car/telemetry";
+const COACH_CONTROL_TOPIC = "coach/control";
+const COACH_CUES_TOPIC = "car/cues";
 
 const TRACK_LAP_KM  = 3.7;   // Lusail short lap
 const LAPS_TARGET   = 4;
@@ -43,6 +45,8 @@ const mainTimerEl = el("mainTimer");
 const avgSpeedEl      = el("avgSpeed");
 const remainingEl     = el("remainingTime");
 const distanceEl      = el("distanceCovered");
+const gpsDistanceEl   = el("gpsDistance");
+const gpsSpeedEl      = el("gpsSpeed");
 const consumptionEl   = el("consumption");
 const voltageEl       = el("voltage");
 const currentEl       = el("current");
@@ -66,6 +70,13 @@ const state = {
   energyWhAbs: 0,
   t0: null,
   lastTsMs: null,
+  // GPS distance tracking
+  lastLat: null,
+  lastLon: null,
+  lastGpsTime: null,
+  gpsDistanceKm: 0,
+  baseGpsDistanceKm: 0,
+  gpsSpeedKmh: 0,
   // relative baseline
   baseDistKm: 0,
   baseEnergyWh: 0,
@@ -86,6 +97,27 @@ const state = {
 };
 function clampLen(arr, max) {
   if (arr.length > max) arr.splice(0, arr.length - max);
+}
+
+/* ====== GPS DISTANCE CALCULATION (Haversine) ====== */
+function calculateHaversineDistance(lat1, lon1, lat2, lon2) {
+  // Calculate distance between two GPS points using Haversine formula
+  // Returns distance in kilometers
+  
+  const R = 6371; // Earth radius in km
+  
+  // Convert degrees to radians
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  
+  // Haversine formula
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  
+  return R * c; // Distance in km
 }
 /* ====== MAP SETUP (Leaflet) ====== */
 let map, marker;
@@ -183,45 +215,58 @@ function mqttConnect() {
 
   client.on("connect", () => {
     console.log("✅ Connected to HiveMQ Cloud");
-    // Subscribe with qos 0 and no retained messages
+    // Subscribe to telemetry topic
     client.subscribe(TOPIC, { qos: 0 }, (err) => {
       if (err) {
         console.error("Subscribe error:", err);
       } else {
         console.log(`📡 Subscribed to topic: ${TOPIC}`);
-        console.log("⏳ Waiting for new MQTT messages...");
       }
     });
+    // Subscribe to coaching cues topic
+    client.subscribe(COACH_CUES_TOPIC, { qos: 0 }, (err) => {
+      if (err) {
+        console.error("Subscribe error for cues:", err);
+      } else {
+        console.log(`📡 Subscribed to topic: ${COACH_CUES_TOPIC}`);
+      }
+    });
+    console.log("⏳ Waiting for new MQTT messages...");
   });
 
   client.on("message", (topic, payload, packet) => {
-    if (topic !== TOPIC) return;
-    
-    // Log received message info
-    console.log(`📨 Received MQTT message on ${topic}:`, {
-      retained: packet.retain,
-      qos: packet.qos,
-      payloadLength: payload.length,
-      timestamp: new Date().toISOString()
-    });
-    
     // IGNORE RETAINED MESSAGES - only process new messages
     if (packet.retain) {
       console.log("⚠️ Ignoring RETAINED message (old/cached data)");
       return;
     }
     
-    let data;
-    try { 
-      data = JSON.parse(payload.toString());
-      console.log("📊 Parsed NEW data:", data);
+    // Handle telemetry messages
+    if (topic === TOPIC) {
+      let data;
+      try { 
+        data = JSON.parse(payload.toString());
+        console.log("📊 Parsed telemetry data:", data);
+      }
+      catch(e){ 
+        console.error("❌ Bad packet JSON:", e, "Raw:", payload.toString());
+        return; 
+      }
+      ingestTelemetry(data);
     }
-    catch(e){ 
-      console.error("❌ Bad packet JSON:", e, "Raw:", payload.toString());
-      return; 
+    // Handle coaching cues
+    else if (topic === COACH_CUES_TOPIC) {
+      let cueData;
+      try {
+        cueData = JSON.parse(payload.toString());
+        console.log("🎯 Received coaching cue:", cueData);
+        handleCoachingCue(cueData);
+      }
+      catch(e) {
+        console.error("❌ Bad cue JSON:", e, "Raw:", payload.toString());
+        return;
+      }
     }
-    
-    ingestTelemetry(data);
   });
 
   client.on("error", (err) => {
@@ -325,19 +370,63 @@ function ingestTelemetry(d) {
   state.lon = num(d.longitude || d.lon || d.lng || d.gps_longitude);
   state.lat = num(d.latitude || d.lat || d.gps_latitude);
   
+  // Calculate GPS-based distance and speed using Haversine formula
+  if (state.lastLat !== null && state.lastLon !== null && 
+      state.lat !== 0 && state.lon !== 0 &&
+      state.lastLat !== 0 && state.lastLon !== 0) {
+    
+    const gpsDist = calculateHaversineDistance(
+      state.lastLat, state.lastLon,
+      state.lat, state.lon
+    );
+    
+    // Filter GPS jumps (> 1km between consecutive points)
+    if (gpsDist < 1.0) {
+      state.gpsDistanceKm += gpsDist;
+      
+      // Calculate GPS speed: distance (km) / time (hours)
+      if (state.lastGpsTime !== null) {
+        const dtHours = (now - state.lastGpsTime) / 3600000; // Convert ms to hours
+        if (dtHours > 0) {
+          // Speed = distance / time (km/h)
+          const instantSpeed = gpsDist / dtHours;
+          
+          // Use EWMA smoothing for GPS speed (similar to avg speed)
+          if (state.gpsSpeedKmh === 0) {
+            state.gpsSpeedKmh = instantSpeed;
+          } else {
+            state.gpsSpeedKmh = 0.9 * state.gpsSpeedKmh + 0.1 * instantSpeed;
+          }
+          
+          // Cap unrealistic speeds (> 200 km/h likely GPS error)
+          if (state.gpsSpeedKmh > 200) {
+            state.gpsSpeedKmh = 0;
+          }
+        }
+      }
+    } else {
+      console.warn(`⚠️ GPS jump detected: ${gpsDist.toFixed(3)}km - ignoring`);
+      // Reset GPS speed on jump
+      state.gpsSpeedKmh = 0;
+    }
+  }
+  
+  // Update last GPS position and time for next calculation
+  if (state.lat !== 0 && state.lon !== 0) {
+    state.lastLat = state.lat;
+    state.lastLon = state.lon;
+    state.lastGpsTime = now;
+  }
+  
   // Update map immediately when valid GPS coordinates are received
   updateMapFromGPS(state.lat, state.lon);
   
-  // --- AI Cue from MQTT ---
+  // --- Legacy AI Cue from telemetry (backward compatibility) ---
+  // Note: Primary coaching cues now come from car/cues topic via handleCoachingCue()
   if (d.ai_cue !== undefined && d.ai_cue !== null && d.ai_cue !== "") {
     state.aiCue = String(d.ai_cue).toLowerCase().trim();
     state.aiCueTime = now;
     updateAICueDisplay(state.aiCue);
-  }
-  
-  // --- Evaluate driver response to AI cue ---
-  if (state.aiCue) {
-    evaluateDriverResponse();
   }
 
   // --- Integrate energy (Wh = W × h) ---
@@ -394,7 +483,82 @@ function ingestTelemetry(d) {
   requestFrame();
 }
 
-/* ====== AI CUE & DRIVER RESPONSE ====== */
+/* ====== COACHING CUE HANDLER ====== */
+function handleCoachingCue(cueData) {
+  // Dashboard contract: minimal fields required
+  // { "ts": timestamp, "state": "green"|"red", "cue_text": "instruction text", "cue_key": "SPEED_HIGH"|"POWER_HIGH"|etc }
+  
+  if (!cueData) return;
+  
+  const cueText = cueData.cue_text || '';
+  const cueState = cueData.state || 'neutral'; // "green", "red", or default to "neutral"
+  const cueKey = cueData.cue_key; // Required: cue type for categorization
+  const zoneId = cueData.zone_id; // Optional: zone context
+  
+  // Update AI status circle based on cueState
+  if (aiStatusCircle) {
+    aiStatusCircle.className = 'ai-status-circle';
+    if (cueState === 'green') {
+      aiStatusCircle.classList.add('good');
+    } else if (cueState === 'red') {
+      aiStatusCircle.classList.add('bad');
+    } else {
+      aiStatusCircle.classList.add('neutral');
+    }
+  }
+  
+  // Update cue display text and styling based on cue_key
+  if (aiCueDisplay) {
+    // Display the cue text
+    aiCueDisplay.textContent = cueText || '--';
+    
+    // Remove all cue classes
+    aiCueDisplay.className = 'ai-cue-display';
+    
+    // Categorize and style based on cue_key
+    if (cueKey) {
+      const keyUpper = cueKey.toUpperCase();
+      
+      // Map specific cue_key values to display classes
+      // High speed/power situations → Coast/reduce throttle
+      if (keyUpper === 'SPEED_HIGH' || 
+          keyUpper === 'POWER_HIGH' || 
+          keyUpper === 'TURN_POWER_SPIKE' ||
+          keyUpper.includes('SPEED_HIGH') || 
+          keyUpper.includes('POWER_HIGH') || 
+          keyUpper.includes('TURN_POWER_SPIKE')) {
+        aiCueDisplay.classList.add('cue-coast');
+      }
+      // Approaching stop → Stop/brake
+      else if (keyUpper === 'STOP_APPROACH_POWER' || 
+               keyUpper.includes('STOP_APPROACH') || 
+               keyUpper === 'STOP') {
+        aiCueDisplay.classList.add('cue-stop');
+      }
+      // Braking required
+      else if (keyUpper.includes('BRAKE')) {
+        aiCueDisplay.classList.add('cue-brake');
+      }
+      // Throttle/accelerate needed
+      else if (keyUpper.includes('THROTTLE') || keyUpper.includes('ACCELERATE')) {
+        aiCueDisplay.classList.add('cue-throttle');
+      }
+      // Coast/maintain speed
+      else if (keyUpper.includes('COAST') || keyUpper.includes('MAINTAIN')) {
+        aiCueDisplay.classList.add('cue-coast');
+      }
+      // If cue_key doesn't match known patterns, no additional class is added
+    }
+  }
+  
+  // Store cue data in global state object
+  state.aiCue = cueText;
+  state.aiCueKey = cueKey;
+  state.aiCueTime = performance.now();
+  state.driverResponseGood = (cueState === 'green');
+}
+
+/* ====== AI CUE & DRIVER RESPONSE (Legacy - for backward compatibility) ====== */
 function updateAICueDisplay(cue) {
   if (!aiCueDisplay) return;
   
@@ -523,6 +687,9 @@ function paint(){
   avgSpeedEl.textContent     = state.avgSpeedKmh.toFixed(1);
   remainingEl.textContent    = remainingTime();
   distanceEl.textContent     = distKmRel.toFixed(3);
+  const gpsDistRel = Math.max(0, state.gpsDistanceKm - state.baseGpsDistanceKm);
+  if (gpsDistanceEl) gpsDistanceEl.textContent = gpsDistRel.toFixed(3);
+  if (gpsSpeedEl) gpsSpeedEl.textContent = state.gpsSpeedKmh.toFixed(1);
   consumptionEl.textContent  = Wh_per_km.toFixed(1);
   voltageEl.textContent      = state.v.toFixed(2);
   currentEl.textContent      = state.i.toFixed(2);
@@ -656,11 +823,12 @@ liveBtn?.addEventListener("click", () => {
 resetDistanceBtn?.addEventListener("click", () => {
   state.baseDistKm = state.distKmAbs;
   state.baseEnergyWh = state.energyWhAbs;
+  state.baseGpsDistanceKm = state.gpsDistanceKm;
   resetDistanceBtn.textContent = " Reset!";
   setTimeout(() => resetDistanceBtn.textContent = "Reset Distance", 1500);
 });
 
-// Start Session: Connect MQTT and start logging
+// Start Session: Connect MQTT, start logging, and enable coaching engine
 startSessionBtn?.addEventListener("click", () => {
   // Connect MQTT if not connected
   if (!client || !client.connected) {
@@ -668,33 +836,41 @@ startSessionBtn?.addEventListener("click", () => {
     // Wait a moment for connection
     setTimeout(() => {
       if (client && client.connected) {
+        // Enable coaching engine
+        publishCoachControl(true);
         // Start logging
         logging = true;
         logData = [];
         startSessionBtn.disabled = true;
         endSessionBtn.disabled = false;
-        alert("✅ Session started! MQTT connected and logging active.");
+        alert("✅ Session started! MQTT connected, coaching enabled, and logging active.");
       } else {
         alert("❌ Failed to connect to MQTT. Please check your connection.");
       }
     }, 2000);
-      } else {
-    // Already connected, just start logging
+  } else {
+    // Already connected
+    // Enable coaching engine
+    publishCoachControl(true);
+    // Start logging
     logging = true;
     logData = [];
     startSessionBtn.disabled = true;
     endSessionBtn.disabled = false;
-    alert("✅ Logging started!");
+    alert("✅ Session started! Coaching enabled and logging active.");
   }
 });
 
-// End Session: Stop logging and save file
+// End Session: Disable coaching, stop logging, and save file
 endSessionBtn?.addEventListener("click", () => {
   if (!logging) {
     alert("⚠️ No active logging session.");
-      return;
-    }
-    
+    return;
+  }
+  
+  // Disable coaching engine
+  publishCoachControl(false);
+  
   // Prompt for filename
   const defaultName = `telemetry_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5)}`;
   const fileName = prompt("Enter filename to save (without .csv extension):", defaultName);
@@ -720,7 +896,7 @@ endSessionBtn?.addEventListener("click", () => {
   a.click();
   URL.revokeObjectURL(url);
 
-  alert(`📁 Session ended! Log saved as ${cleanFileName}.csv`);
+  alert(`📁 Session ended! Coaching disabled. Log saved as ${cleanFileName}.csv`);
 });
 graphsBtn.addEventListener("click", () => {
   graphsBtn.classList.add("active");
@@ -733,6 +909,36 @@ graphsBtn.addEventListener("click", () => {
   setTimeout(() => Plotly.Plots.resize(document.querySelector('#graphsView')), 300);
 });
 
+
+/* ====== COACHING ENGINE CONTROL ====== */
+function publishCoachControl(enabled, sessionId = null) {
+  if (!client || !client.connected) {
+    console.warn("⚠️ Cannot publish coach control: MQTT not connected");
+    return;
+  }
+  
+  const payload = {
+    enabled: enabled
+  };
+  
+  // Add optional session_id if provided
+  if (sessionId) {
+    payload.session_id = sessionId;
+  } else if (enabled) {
+    // Generate a session ID when starting
+    payload.session_id = `session_${Date.now()}_${Math.random().toString(16).substr(2, 8)}`;
+  }
+  
+  const message = JSON.stringify(payload);
+  
+  client.publish(COACH_CONTROL_TOPIC, message, { qos: 0 }, (err) => {
+    if (err) {
+      console.error("❌ Error publishing coach control:", err);
+    } else {
+      console.log(`📤 Published to ${COACH_CONTROL_TOPIC}:`, payload);
+    }
+  });
+}
 
 /* ====== CSV LOGGING ====== */
 let logging = false;
@@ -756,6 +962,8 @@ function initializeDisplay() {
   if (avgSpeedEl) avgSpeedEl.textContent = '0';
   if (remainingEl) remainingEl.textContent = '35:00';
   if (distanceEl) distanceEl.textContent = '0';
+  if (gpsDistanceEl) gpsDistanceEl.textContent = '0';
+  if (gpsSpeedEl) gpsSpeedEl.textContent = '0';
   if (consumptionEl) consumptionEl.textContent = '0';
   if (voltageEl) voltageEl.textContent = '0';
   if (currentEl) currentEl.textContent = '0';
