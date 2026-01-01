@@ -458,10 +458,13 @@ function ingestTelemetry(d) {
   // IMPORTANT: Log EVERY packet, no throttling for logging
   if (logging) {
     const nowISO = new Date().toISOString();
+    const distKmRel = Math.max(0, state.distKmAbs - state.baseDistKm);
     const energyWhRel = Math.max(0, state.energyWhAbs - state.baseEnergyWh);
+    const gpsDistRel = Math.max(0, state.gpsDistanceKm - state.baseGpsDistanceKm);
     const kWh = energyWhRel / 1000;
-    const km_per_kWh = kWh > 0 ? (distKmRel / kWh) : 0;
-    const Wh_per_km  = distKmRel > 0 ? (energyWhRel / distKmRel) : 0;
+    // Use GPS distance for efficiency calculations
+    const km_per_kWh = kWh > 0 ? (gpsDistRel / kWh) : 0;
+    const Wh_per_km  = gpsDistRel > 0 ? (energyWhRel / gpsDistRel) : 0;
 
     logData.push({
       timestamp: nowISO,
@@ -673,10 +676,12 @@ function paint(){
   }
 
   const distKmRel   = Math.max(0, state.distKmAbs - state.baseDistKm);
+  const gpsDistRel  = Math.max(0, state.gpsDistanceKm - state.baseGpsDistanceKm);
   const energyWhRel = Math.max(0, state.energyWhAbs - state.baseEnergyWh);
   const kWh = energyWhRel / 1000;
-  const km_per_kWh = kWh > 0 ? (distKmRel / kWh) : 0;
-  const Wh_per_km  = distKmRel > 0 ? (energyWhRel / distKmRel) : 0;
+  // Use GPS distance for efficiency calculations
+  const km_per_kWh = kWh > 0 ? (gpsDistRel / kWh) : 0;
+  const Wh_per_km  = gpsDistRel > 0 ? (energyWhRel / gpsDistRel) : 0;
 
   // Header
   mainSpdEl.textContent = state.speed.toFixed(0);
@@ -687,7 +692,6 @@ function paint(){
   avgSpeedEl.textContent     = state.avgSpeedKmh.toFixed(1);
   remainingEl.textContent    = remainingTime();
   distanceEl.textContent     = distKmRel.toFixed(3);
-  const gpsDistRel = Math.max(0, state.gpsDistanceKm - state.baseGpsDistanceKm);
   if (gpsDistanceEl) gpsDistanceEl.textContent = gpsDistRel.toFixed(3);
   if (gpsSpeedEl) gpsSpeedEl.textContent = state.gpsSpeedKmh.toFixed(1);
   consumptionEl.textContent  = Wh_per_km.toFixed(1);
@@ -731,7 +735,7 @@ let lastGraphMs = 0;
 const trackGraphDiv      = document.getElementById("trackGraph");
 const currentDistGraphDiv= document.getElementById("currentDistGraph");
 const speedDistGraphDiv  = document.getElementById("speedDistGraph");
-const accelSpeedGraphDiv = document.getElementById("accelSpeedGraph");
+const accelSpeedGraphDiv = document.getElementById("accelerationGraph");
 
 function ensureGraphs(){
   if (graphsInited) return;
@@ -788,26 +792,36 @@ function updateGraphs(){
 
   // compute derived quantities
   const dist = Math.max(0, state.distKmAbs - state.baseDistKm);
+  const gpsDist = Math.max(0, state.gpsDistanceKm - state.baseGpsDistanceKm);
   const prevIndex = Math.max(0, latest - 1);
   const dt = t[latest] - t[prevIndex];
   const dv = speed[latest] - speed[prevIndex];
   const dE = state.energyWhAbs - state.baseEnergyWh;
   state.acceleration = dt > 0 ? (dv / dt) : 0;
-  state.consumption  = dist > 0 ? (dE / dist) : 0;
+  // Use GPS distance for consumption calculation
+  state.consumption  = gpsDist > 0 ? (dE / gpsDist) : 0;
 
   // extend base graphs
   Plotly.extendTraces(speedGraphDiv,   {x:[[t[latest]]], y:[[speed[latest]]]}, [0], 3000);
   Plotly.extendTraces(currentGraphDiv, {x:[[t[latest]]], y:[[current[latest]]]}, [0], 3000);
   Plotly.extendTraces(powerGraphDiv,   {x:[[t[latest]]], y:[[power[latest]]]}, [0], 3000);
 
-  // analytics graphs
-  Plotly.extendTraces(currentDistGraphDiv, {x:[[dist]], y:[[state.i]]}, [0], 3000);
-  Plotly.extendTraces(speedDistGraphDiv,   {x:[[dist]], y:[[state.speed]]}, [0], 3000);
-  Plotly.extendTraces(trackGraphDiv, {x:[[state.lon]], y:[[state.lat]]}, [0], 3000);
-  Plotly.restyle(trackGraphDiv, {"line.color": [[`rgb(${Math.min(255, state.i*5)},0,200)`]]}, [0]);
-  Plotly.extendTraces(accelSpeedGraphDiv,
-    {x:[[state.acceleration]], y:[[state.speed]], "marker.color":[[state.consumption]]},
-    [0], 1000);
+  // analytics graphs - use GPS distance for distance-based graphs
+  if (currentDistGraphDiv) {
+    Plotly.extendTraces(currentDistGraphDiv, {x:[[gpsDist]], y:[[state.i]]}, [0], 3000);
+  }
+  if (speedDistGraphDiv) {
+    Plotly.extendTraces(speedDistGraphDiv, {x:[[gpsDist]], y:[[state.speed]]}, [0], 3000);
+  }
+  if (trackGraphDiv && state.lat !== 0 && state.lon !== 0) {
+    Plotly.extendTraces(trackGraphDiv, {x:[[state.lon]], y:[[state.lat]]}, [0], 3000);
+    Plotly.restyle(trackGraphDiv, {"line.color": [[`rgb(${Math.min(255, state.i*5)},0,200)`]]}, [0]);
+  }
+  if (accelSpeedGraphDiv) {
+    Plotly.extendTraces(accelSpeedGraphDiv,
+      {x:[[state.acceleration]], y:[[state.speed]], "marker.color":[[state.consumption]]},
+      [0], 1000);
+  }
 }
 
 
