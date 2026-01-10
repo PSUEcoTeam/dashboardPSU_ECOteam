@@ -81,8 +81,8 @@
                         <h3>Race Telemetry</h3>
                     </div>
                     <div class="card-content">
-                        <!-- Row 1: Avg Speed, Remaining Time, Distance, GPS Distance, GPS Speed -->
-                        <div class="metric-row">
+                        <!-- Row 1: Avg Speed, Remaining Time, GPS Distance, Status -->
+                        <div class="metric-row metric-row-4">
                             <div class="metric-item">
                                 <div class="metric-value" id="avgSpeed">0</div>
                                 <div class="metric-unit">km/h</div>
@@ -94,23 +94,18 @@
                                 <div class="metric-label">Remaining</div>
                             </div>
                             <div class="metric-item">
-                                <div class="metric-value" id="distanceCovered">0</div>
-                                <div class="metric-unit">km</div>
-                                <div class="metric-label">Distance</div>
-                            </div>
-                            <div class="metric-item">
                                 <div class="metric-value" id="gpsDistance">0</div>
                                 <div class="metric-unit">km</div>
                                 <div class="metric-label">GPS Distance</div>
                             </div>
                             <div class="metric-item">
-                                <div class="metric-value" id="gpsSpeed">0</div>
-                                <div class="metric-unit">km/h</div>
-                                <div class="metric-label">GPS Speed</div>
+                                <div class="metric-value" id="status">0</div>
+                                <div class="metric-unit">--</div>
+                                <div class="metric-label">Status</div>
                             </div>
                         </div>
-                        <!-- Row 2: Consumption, Voltage, Current -->
-                        <div class="metric-row">
+                        <!-- Row 2: Consumption, Voltage, Current, t_ms -->
+                        <div class="metric-row metric-row-4">
                             <div class="metric-item">
                                 <div class="metric-value" id="consumption">0</div>
                                 <div class="metric-unit">Wh/km</div>
@@ -126,9 +121,14 @@
                                 <div class="metric-unit">A</div>
                                 <div class="metric-label">Current</div>
                             </div>
+                            <div class="metric-item">
+                                <div class="metric-value" id="tMs">0</div>
+                                <div class="metric-unit">ms</div>
+                                <div class="metric-label">Time (t_ms)</div>
+                            </div>
                         </div>
-                        <!-- Row 3: Power, Total Energy, RPM, Efficiency -->
-                        <div class="metric-row metric-row-4">
+                        <!-- Row 3: Power, Total Energy, RPM -->
+                        <div class="metric-row metric-row-3">
                             <div class="metric-item">
                                 <div class="metric-value" id="power">0</div>
                                 <div class="metric-unit">W</div>
@@ -143,11 +143,6 @@
                                 <div class="metric-value" id="rpm">0</div>
                                 <div class="metric-unit">RPM</div>
                                 <div class="metric-label">RPM</div>
-                            </div>
-                            <div class="metric-item">
-                                <div class="metric-value" id="efficiency">0</div>
-                                <div class="metric-unit">km/kWh</div>
-                                <div class="metric-label">Efficiency</div>
                             </div>
                         </div>
                     </div>
@@ -178,6 +173,7 @@
                 <h2>Telemetry Analysis</h2>
                 <div class="graph-controls">
                     <button id="refreshGraphsBtn" class="graph-btn">Refresh Graphs</button>
+                    <button id="exportGraphsBtn" class="graph-btn export-btn">Export All Graphs</button>
                     <select id="lapFilter" class="lap-selector">
                         <option value="all">All Laps</option>
                         <option value="0">Lap 1</option>

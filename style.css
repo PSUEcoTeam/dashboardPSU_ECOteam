@@ -426,14 +426,20 @@ body {
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 15px;
+    gap: 12px;
+    padding: 0;
 }
 
 /* Metric Grid - Uniform Containers */
 .metric-row {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 12px;
+    margin: 0;
+}
+
+.metric-row.metric-row-3 {
+    grid-template-columns: repeat(3, 1fr);
 }
 
 .metric-row.metric-row-4 {
@@ -455,6 +461,7 @@ body {
     align-items: center;
     justify-content: center;
     min-height: 100px;
+    gap: 4px;
     transition: all 0.3s ease;
 }
 
@@ -469,6 +476,7 @@ body {
     font-weight: 700;
     color: #fff;
     line-height: 1.2;
+    margin-bottom: 4px;
     margin-bottom: 6px;
     min-height: 2.4rem;
     display: flex;
@@ -604,6 +612,15 @@ body {
 .graph-btn:hover {
     transform: translateY(-2px);
     box-shadow: 0 4px 12px rgba(255, 107, 53, 0.5);
+}
+
+.graph-btn.export-btn {
+    background: linear-gradient(135deg, #4CAF50, #45a049);
+    box-shadow: 0 2px 8px rgba(76, 175, 80, 0.3);
+}
+
+.graph-btn.export-btn:hover {
+    box-shadow: 0 4px 12px rgba(76, 175, 80, 0.5);
 }
 
 .lap-selector {

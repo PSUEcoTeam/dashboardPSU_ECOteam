@@ -44,18 +44,15 @@ const mainTimerEl = el("mainTimer");
 // Telemetry card metrics
 const avgSpeedEl      = el("avgSpeed");
 const remainingEl     = el("remainingTime");
-const distanceEl      = el("distanceCovered");
 const gpsDistanceEl   = el("gpsDistance");
-const gpsSpeedEl      = el("gpsSpeed");
+const statusEl        = el("status");
+const tMsEl           = el("tMs");
 const consumptionEl   = el("consumption");
 const voltageEl       = el("voltage");
 const currentEl       = el("current");
 const powerEl         = el("power");
 const totalEnergyEl   = el("totalEnergy");
 const rpmEl           = el("rpm");
-const efficiencyEl    = el("efficiency");
-const gpsLonEl        = el("gpsLongitude");
-const gpsLatEl        = el("gpsLatitude");
 
 // Graph divs
 const speedGraphDiv   = el("speedGraph");
@@ -66,8 +63,10 @@ const powerGraphDiv   = el("powerGraph");
 const state = {
   // latest packet
   v: 0, i: 0, p: 0, speed: 0, rpm: 0, distKmAbs: 0, lon: 0, lat: 0,
+  energyWhAbs: 0,  // Now comes from MQTT directly
+  status: 0,
+  tMs: 0,
   // accumulated
-  energyWhAbs: 0,
   t0: null,
   lastTsMs: null,
   // GPS distance tracking
@@ -76,7 +75,6 @@ const state = {
   lastGpsTime: null,
   gpsDistanceKm: 0,
   baseGpsDistanceKm: 0,
-  gpsSpeedKmh: 0,
   // relative baseline
   baseDistKm: 0,
   baseEnergyWh: 0,
@@ -84,7 +82,7 @@ const state = {
   avgSpeedKmh: 0,
   laps: 0,
   // graph buffers
-  series: { t: [], speed: [], current: [], power: [] },
+  series: { t: [], speed: [], current: [], power: [], lat: [], lon: [], gpsDist: [] },
   maxPoints: 3000,
   // AI cues and response
   aiCue: null,
@@ -369,8 +367,12 @@ function ingestTelemetry(d) {
   // Parse GPS coordinates - support multiple field name variants
   state.lon = num(d.longitude || d.lon || d.lng || d.gps_longitude);
   state.lat = num(d.latitude || d.lat || d.gps_latitude);
+  // New fields from MQTT packet
+  state.energyWhAbs = num(d.energy_Wh);  // Use energy directly from MQTT
+  state.status = num(d.status);
+  state.tMs = num(d.t_ms);
   
-  // Calculate GPS-based distance and speed using Haversine formula
+  // Calculate GPS-based distance using Haversine formula (no GPS speed calculation)
   if (state.lastLat !== null && state.lastLon !== null && 
       state.lat !== 0 && state.lon !== 0 &&
       state.lastLat !== 0 && state.lastLon !== 0) {
@@ -383,31 +385,8 @@ function ingestTelemetry(d) {
     // Filter GPS jumps (> 1km between consecutive points)
     if (gpsDist < 1.0) {
       state.gpsDistanceKm += gpsDist;
-      
-      // Calculate GPS speed: distance (km) / time (hours)
-      if (state.lastGpsTime !== null) {
-        const dtHours = (now - state.lastGpsTime) / 3600000; // Convert ms to hours
-        if (dtHours > 0) {
-          // Speed = distance / time (km/h)
-          const instantSpeed = gpsDist / dtHours;
-          
-          // Use EWMA smoothing for GPS speed (similar to avg speed)
-          if (state.gpsSpeedKmh === 0) {
-            state.gpsSpeedKmh = instantSpeed;
-          } else {
-            state.gpsSpeedKmh = 0.9 * state.gpsSpeedKmh + 0.1 * instantSpeed;
-          }
-          
-          // Cap unrealistic speeds (> 200 km/h likely GPS error)
-          if (state.gpsSpeedKmh > 200) {
-            state.gpsSpeedKmh = 0;
-          }
-        }
-      }
     } else {
       console.warn(`⚠️ GPS jump detected: ${gpsDist.toFixed(3)}km - ignoring`);
-      // Reset GPS speed on jump
-      state.gpsSpeedKmh = 0;
     }
   }
   
@@ -429,10 +408,7 @@ function ingestTelemetry(d) {
     updateAICueDisplay(state.aiCue);
   }
 
-  // --- Integrate energy (Wh = W × h) ---
-  if (dtH > 0 && state.p > -1e6 && state.p < 1e6) {
-    state.energyWhAbs += state.p * dtH;
-  }
+  // --- Energy now comes directly from MQTT (energy_Wh), no calculation needed ---
 
   // --- Avg speed (EWMA smoothing) ---
   state.avgSpeedKmh = state.avgSpeedKmh === 0
@@ -445,14 +421,21 @@ function ingestTelemetry(d) {
 
   // --- Time-series data for graphs ---
   const tSec = (now - state.t0) / 1000;
+  const gpsDistRel = Math.max(0, state.gpsDistanceKm - state.baseGpsDistanceKm);
   state.series.t.push(tSec);
   state.series.speed.push(state.speed);
   state.series.current.push(state.i);
   state.series.power.push(state.p);
+  state.series.lat.push(state.lat);
+  state.series.lon.push(state.lon);
+  state.series.gpsDist.push(gpsDistRel);
   clampLen(state.series.t, state.maxPoints);
   clampLen(state.series.speed, state.maxPoints);
   clampLen(state.series.current, state.maxPoints);
   clampLen(state.series.power, state.maxPoints);
+  clampLen(state.series.lat, state.maxPoints);
+  clampLen(state.series.lon, state.maxPoints);
+  clampLen(state.series.gpsDist, state.maxPoints);
 
   // --- Logging to CSV (if enabled) ---
   // IMPORTANT: Log EVERY packet, no throttling for logging
@@ -476,6 +459,9 @@ function ingestTelemetry(d) {
       distance_km: state.distKmAbs.toFixed(4),
       latitude: state.lat.toFixed(6),
       longitude: state.lon.toFixed(6),
+      energy_Wh: state.energyWhAbs.toFixed(6),
+      status: state.status.toFixed(0),
+      t_ms: state.tMs.toFixed(0),
       total_energy_wh: energyWhRel.toFixed(3),
       efficiency_km_per_kwh: km_per_kWh.toFixed(3),
       consumption_wh_per_km: Wh_per_km.toFixed(3)
@@ -691,18 +677,15 @@ function paint(){
   // Telemetry metrics
   avgSpeedEl.textContent     = state.avgSpeedKmh.toFixed(1);
   remainingEl.textContent    = remainingTime();
-  distanceEl.textContent     = distKmRel.toFixed(3);
   if (gpsDistanceEl) gpsDistanceEl.textContent = gpsDistRel.toFixed(3);
-  if (gpsSpeedEl) gpsSpeedEl.textContent = state.gpsSpeedKmh.toFixed(1);
+  if (statusEl) statusEl.textContent = state.status.toFixed(0);
+  if (tMsEl) tMsEl.textContent = state.tMs.toFixed(0);
   consumptionEl.textContent  = Wh_per_km.toFixed(1);
   voltageEl.textContent      = state.v.toFixed(2);
   currentEl.textContent      = state.i.toFixed(2);
   powerEl.textContent        = state.p.toFixed(0);
   totalEnergyEl.textContent  = energyWhRel.toFixed(1);
   rpmEl.textContent          = state.rpm.toFixed(0);
-  efficiencyEl.textContent   = km_per_kWh.toFixed(1);
-  gpsLonEl.textContent       = state.lon.toFixed(6);
-  gpsLatEl.textContent       = state.lat.toFixed(6);
 
   // Laps
   lapCounterEl.textContent = `${Math.min(state.laps, LAPS_TARGET)}/${LAPS_TARGET}`;
@@ -736,9 +719,17 @@ const trackGraphDiv      = document.getElementById("trackGraph");
 const currentDistGraphDiv= document.getElementById("currentDistGraph");
 const speedDistGraphDiv  = document.getElementById("speedDistGraph");
 const accelSpeedGraphDiv = document.getElementById("accelerationGraph");
+const exportGraphsBtn    = el("exportGraphsBtn");
 
 function ensureGraphs(){
   if (graphsInited) return;
+  
+  // Check if graph divs exist before initializing
+  if (!speedGraphDiv || !currentGraphDiv || !powerGraphDiv) {
+    console.warn("⚠️ Graph divs not found - graphs will not be initialized");
+    return;
+  }
+  
   graphsInited = true;
 
   const baseLayout = {
@@ -746,44 +737,151 @@ function ensureGraphs(){
     autosize: true,
     paper_bgcolor: "transparent",
     plot_bgcolor: "transparent",
-      showlegend: false
+    showlegend: false
   };
 
+  // Initialize main time-series graphs
   Plotly.newPlot(speedGraphDiv, [{
-    x: [], y: [], name: "Speed (km/h)", mode: "lines"
+    x: [], y: [], name: "Speed (km/h)", mode: "lines", line: {color: "#4CAF50"}
   }], { ...baseLayout, title: "Speed vs Time", xaxis:{title:"Time (s)"}, yaxis:{title:"km/h"} }, {responsive:true});
 
   Plotly.newPlot(currentGraphDiv, [{
-    x: [], y: [], name: "Current (A)", mode: "lines"
+    x: [], y: [], name: "Current (A)", mode: "lines", line: {color: "#2196F3"}
   }], { ...baseLayout, title: "Current vs Time", xaxis:{title:"Time (s)"}, yaxis:{title:"A"} }, {responsive:true});
 
   Plotly.newPlot(powerGraphDiv, [{
-    x: [], y: [], name: "Power (W)", mode: "lines"
+    x: [], y: [], name: "Power (W)", mode: "lines", line: {color: "#FF9800"}
   }], { ...baseLayout, title: "Power vs Time", xaxis:{title:"Time (s)"}, yaxis:{title:"W"} }, {responsive:true});
 
-  Plotly.newPlot(trackGraphDiv, [{
-    x: [], y: [], mode: "lines", line:{width:3}, name:"GPS Path"
-  }], { ...baseLayout, title:"Track Visualization (Current Heatmap)", xaxis:{title:"Longitude"}, yaxis:{title:"Latitude"} }, {responsive:true});
+  // Initialize analytics graphs with null checks
+  if (trackGraphDiv) {
+    Plotly.newPlot(trackGraphDiv, [{
+      x: [], y: [], mode: "lines", line:{width:3}, name:"GPS Path"
+    }], { ...baseLayout, title:"Track Visualization (Current Heatmap)", xaxis:{title:"Longitude"}, yaxis:{title:"Latitude"} }, {responsive:true});
+  }
 
-  Plotly.newPlot(currentDistGraphDiv, [{
-    x: [], y: [], mode: "lines", name: "Current (A)", line:{width:2}
-  }], { ...baseLayout, title:"Current vs Distance", xaxis:{title:"Distance (km)"}, yaxis:{title:"Current (A)"} }, {responsive:true});
+  if (currentDistGraphDiv) {
+    Plotly.newPlot(currentDistGraphDiv, [{
+      x: [], y: [], mode: "lines", name: "Current (A)", line:{width:2, color: "#2196F3"}
+    }], { ...baseLayout, title:"Current vs Distance", xaxis:{title:"Distance (km)"}, yaxis:{title:"Current (A)"} }, {responsive:true});
+  }
 
-  Plotly.newPlot(speedDistGraphDiv, [{
-    x: [], y: [], mode: "lines", name: "Speed (km/h)", line:{width:2}
-  }], { ...baseLayout, title:"Speed vs Distance", xaxis:{title:"Distance (km)"}, yaxis:{title:"Speed (km/h)"} }, {responsive:true});
+  if (speedDistGraphDiv) {
+    Plotly.newPlot(speedDistGraphDiv, [{
+      x: [], y: [], mode: "lines", name: "Speed (km/h)", line:{width:2, color: "#4CAF50"}
+    }], { ...baseLayout, title:"Speed vs Distance", xaxis:{title:"Distance (km)"}, yaxis:{title:"Speed (km/h)"} }, {responsive:true});
+  }
 
-  Plotly.newPlot(accelSpeedGraphDiv, [{
-    x: [], y: [], mode: "markers",
-    marker:{size:6, color:[], colorscale:"Turbo", colorbar:{title:"Consumption"}}
-  }], { ...baseLayout, title:"Acceleration vs Speed", xaxis:{title:"Acceleration (m/s²)"}, yaxis:{title:"Speed (km/h)"} }, {responsive:true});
+  if (accelSpeedGraphDiv) {
+    Plotly.newPlot(accelSpeedGraphDiv, [{
+      x: [], y: [], mode: "markers",
+      marker:{size:6, color:[], colorscale:"Turbo", colorbar:{title:"Consumption"}}
+    }], { ...baseLayout, title:"Acceleration vs Speed", xaxis:{title:"Acceleration (m/s²)"}, yaxis:{title:"Speed (km/h)"} }, {responsive:true});
+  }
+  
+  console.log("✅ Graphs initialized");
+}
+
+// Function to rebuild graphs with all existing data (useful when switching to graphs view)
+function rebuildGraphsWithData() {
+  if (!graphsInited) {
+    ensureGraphs();
+    // If no data yet, just initialize empty graphs
+    if (state.series.t.length === 0) return;
+  }
+  
+  const {t, speed, current, power} = state.series;
+  if (t.length === 0) return;
+  
+  const gpsDist = Math.max(0, state.gpsDistanceKm - state.baseGpsDistanceKm);
+  const dE = state.energyWhAbs - state.baseEnergyWh;
+  state.consumption = gpsDist > 0 ? (dE / gpsDist) : 0;
+  
+  // Calculate acceleration array
+  const acceleration = [];
+  for (let i = 0; i < t.length; i++) {
+    const prevIndex = Math.max(0, i - 1);
+    const dt = t[i] - t[prevIndex];
+    const dv = speed[i] - speed[prevIndex];
+    acceleration.push(dt > 0 ? (dv / dt) : 0);
+  }
+  
+  // Use tracked GPS distances from series
+  const gpsDistances = state.series.gpsDist;
+  
+  const baseLayout = {
+    margin: { t: 30 },
+    autosize: true,
+    paper_bgcolor: "transparent",
+    plot_bgcolor: "transparent",
+    showlegend: false
+  };
+  
+  // Rebuild all graphs with full data
+  if (speedGraphDiv) {
+    Plotly.newPlot(speedGraphDiv, [{
+      x: t, y: speed, name: "Speed (km/h)", mode: "lines", line: {color: "#4CAF50"}
+    }], { ...baseLayout, title: "Speed vs Time", xaxis:{title:"Time (s)"}, yaxis:{title:"km/h"} }, {responsive:true});
+  }
+  if (currentGraphDiv) {
+    Plotly.newPlot(currentGraphDiv, [{
+      x: t, y: current, name: "Current (A)", mode: "lines", line: {color: "#2196F3"}
+    }], { ...baseLayout, title: "Current vs Time", xaxis:{title:"Time (s)"}, yaxis:{title:"A"} }, {responsive:true});
+  }
+  if (powerGraphDiv) {
+    Plotly.newPlot(powerGraphDiv, [{
+      x: t, y: power, name: "Power (W)", mode: "lines", line: {color: "#FF9800"}
+    }], { ...baseLayout, title: "Power vs Time", xaxis:{title:"Time (s)"}, yaxis:{title:"W"} }, {responsive:true});
+  }
+  if (currentDistGraphDiv) {
+    Plotly.newPlot(currentDistGraphDiv, [{
+      x: gpsDistances, y: current, mode: "lines", name: "Current (A)", line:{width:2, color: "#2196F3"}
+    }], { ...baseLayout, title:"Current vs Distance", xaxis:{title:"Distance (km)"}, yaxis:{title:"Current (A)"} }, {responsive:true});
+  }
+  if (speedDistGraphDiv) {
+    Plotly.newPlot(speedDistGraphDiv, [{
+      x: gpsDistances, y: speed, mode: "lines", name: "Speed (km/h)", line:{width:2, color: "#4CAF50"}
+    }], { ...baseLayout, title:"Speed vs Distance", xaxis:{title:"Distance (km)"}, yaxis:{title:"Speed (km/h)"} }, {responsive:true});
+  }
+  if (trackGraphDiv && state.series.lon.length > 0 && state.series.lat.length > 0) {
+    // Filter out zero coordinates (invalid GPS)
+    const validLons = [];
+    const validLats = [];
+    const validCurrents = [];
+    for (let i = 0; i < state.series.lon.length; i++) {
+      if (state.series.lat[i] !== 0 && state.series.lon[i] !== 0) {
+        validLons.push(state.series.lon[i]);
+        validLats.push(state.series.lat[i]);
+        validCurrents.push(state.series.current[i]);
+      }
+    }
+    if (validLons.length > 0) {
+      Plotly.newPlot(trackGraphDiv, [{
+        x: validLons, y: validLats, mode: "lines+markers", name:"GPS Path", 
+        line:{width:3, color: "red"}, marker:{size:4}
+      }], { ...baseLayout, title:"Track Visualization (Current Heatmap)", xaxis:{title:"Longitude"}, yaxis:{title:"Latitude"} }, {responsive:true});
+    }
+  }
+  if (accelSpeedGraphDiv) {
+    Plotly.newPlot(accelSpeedGraphDiv, [{
+      x: acceleration, y: speed, mode: "markers",
+      marker:{size:6, color: Array(speed.length).fill(state.consumption), colorscale:"Turbo", colorbar:{title:"Consumption"}}
+    }], { ...baseLayout, title:"Acceleration vs Speed", xaxis:{title:"Acceleration (m/s²)"}, yaxis:{title:"Speed (km/h)"} }, {responsive:true});
+  }
+  
+  console.log(`✅ Graphs rebuilt with ${t.length} data points`);
 }
 
 function updateGraphs(){
-  if (graphsView.style.display === "none") return;
+  // Always ensure graphs are initialized (even if view is hidden, so they're ready when shown)
   ensureGraphs();
+  
+  // Only update if graphs view is visible
+  if (graphsView && graphsView.style.display === "none") return;
+  
   const now = performance.now();
-  if (now - lastGraphMs < 500) return;
+  // Reduce throttle to 200ms for more real-time feel (5 FPS for graphs)
+  if (now - lastGraphMs < 200) return;
   lastGraphMs = now;
 
   const {t, speed, current, power} = state.series;
@@ -801,10 +899,16 @@ function updateGraphs(){
   // Use GPS distance for consumption calculation
   state.consumption  = gpsDist > 0 ? (dE / gpsDist) : 0;
 
-  // extend base graphs
-  Plotly.extendTraces(speedGraphDiv,   {x:[[t[latest]]], y:[[speed[latest]]]}, [0], 3000);
-  Plotly.extendTraces(currentGraphDiv, {x:[[t[latest]]], y:[[current[latest]]]}, [0], 3000);
-  Plotly.extendTraces(powerGraphDiv,   {x:[[t[latest]]], y:[[power[latest]]]}, [0], 3000);
+  // extend base graphs with null checks
+  if (speedGraphDiv) {
+    Plotly.extendTraces(speedGraphDiv, {x:[[t[latest]]], y:[[speed[latest]]]}, [0], 3000);
+  }
+  if (currentGraphDiv) {
+    Plotly.extendTraces(currentGraphDiv, {x:[[t[latest]]], y:[[current[latest]]]}, [0], 3000);
+  }
+  if (powerGraphDiv) {
+    Plotly.extendTraces(powerGraphDiv, {x:[[t[latest]]], y:[[power[latest]]]}, [0], 3000);
+  }
 
   // analytics graphs - use GPS distance for distance-based graphs
   if (currentDistGraphDiv) {
@@ -824,6 +928,90 @@ function updateGraphs(){
   }
 }
 
+/* ====== EXPORT GRAPHS ====== */
+async function exportAllGraphs() {
+  if (!graphsInited) {
+    alert("⚠️ No graphs to export. Please wait for graphs to initialize.");
+    return;
+  }
+  
+  // Ensure graphs view is visible (required for Plotly export)
+  if (graphsView && graphsView.style.display === "none") {
+    alert("⚠️ Please switch to Graphs view before exporting.");
+    return;
+  }
+  
+  // List of all graph divs with their display names
+  const graphs = [
+    { div: speedGraphDiv, name: "Speed_vs_Time" },
+    { div: currentGraphDiv, name: "Current_vs_Time" },
+    { div: powerGraphDiv, name: "Power_vs_Time" },
+    { div: trackGraphDiv, name: "Track_Visualization" },
+    { div: currentDistGraphDiv, name: "Current_vs_Distance" },
+    { div: speedDistGraphDiv, name: "Speed_vs_Distance" },
+    { div: accelSpeedGraphDiv, name: "Acceleration_vs_Speed" }
+  ];
+  
+  // Filter out null/undefined graphs and check if they have data
+  const validGraphs = graphs.filter(g => {
+    if (!g.div) return false;
+    // Check if graph has been plotted (has data)
+    try {
+      const data = g.div.data;
+      return data && data.length > 0;
+    } catch (e) {
+      return false;
+    }
+  });
+  
+  if (validGraphs.length === 0) {
+    alert("⚠️ No graphs with data available to export. Please wait for data to be collected.");
+    return;
+  }
+  
+  // Disable button during export
+  if (exportGraphsBtn) {
+    exportGraphsBtn.disabled = true;
+    exportGraphsBtn.textContent = "Exporting...";
+  }
+  
+  try {
+    // Generate timestamp for all files
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+    
+    // Export each graph with a small delay to avoid browser blocking
+    for (let i = 0; i < validGraphs.length; i++) {
+      const graph = validGraphs[i];
+      
+      // Wait a bit between exports (except for the first one)
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 800));
+      }
+      
+      // Generate filename with timestamp
+      const filename = `telemetry_${graph.name}_${timestamp}.png`;
+      
+      // Export the graph
+      await Plotly.downloadImage(graph.div, {
+        format: 'png',
+        width: 1200,
+        height: 800,
+        filename: filename
+      });
+    }
+    
+    alert(`✅ Successfully exported ${validGraphs.length} graph(s) as PNG images!`);
+  } catch (error) {
+    console.error("❌ Error exporting graphs:", error);
+    alert(`❌ Error exporting graphs: ${error.message}\n\nPlease ensure:\n- Graphs view is visible\n- Graphs have data\n- Browser allows downloads`);
+  } finally {
+    // Re-enable button
+    if (exportGraphsBtn) {
+      exportGraphsBtn.disabled = false;
+      exportGraphsBtn.textContent = "Export All Graphs";
+    }
+  }
+}
 
 /* ====== UI EVENTS ====== */
 liveBtn?.addEventListener("click", () => {
@@ -836,7 +1024,7 @@ liveBtn?.addEventListener("click", () => {
 
 resetDistanceBtn?.addEventListener("click", () => {
   state.baseDistKm = state.distKmAbs;
-  state.baseEnergyWh = state.energyWhAbs;
+  state.baseEnergyWh = state.energyWhAbs;  // Reset baseline for relative energy calculation
   state.baseGpsDistanceKm = state.gpsDistanceKm;
   resetDistanceBtn.textContent = " Reset!";
   setTimeout(() => resetDistanceBtn.textContent = "Reset Distance", 1500);
@@ -917,10 +1105,32 @@ graphsBtn.addEventListener("click", () => {
   liveBtn.classList.remove("active");
   telemView.style.display = "none";
   graphsView.style.display = "";
-  ensureGraphs();
+  
+  // Rebuild graphs with all existing data when switching to graphs view
+  rebuildGraphsWithData();
+  
+  // Force immediate graph update
+  updateGraphs();
   requestFrame();
+  
   // 👇 Important: trigger Plotly to recalc layout after becoming visible
-  setTimeout(() => Plotly.Plots.resize(document.querySelector('#graphsView')), 300);
+  setTimeout(() => {
+    if (graphsView) {
+      Plotly.Plots.resize(graphsView);
+    }
+    // Also resize individual graph containers
+    const graphContainers = graphsView.querySelectorAll('.plotly-graph');
+    graphContainers.forEach(container => {
+      if (container.id) {
+        Plotly.Plots.resize(container);
+      }
+    });
+  }, 300);
+});
+
+// Export graphs button
+exportGraphsBtn?.addEventListener("click", () => {
+  exportAllGraphs();
 });
 
 
@@ -975,18 +1185,15 @@ function initializeDisplay() {
   if (mainTimerEl) mainTimerEl.textContent = '00:00';
   if (avgSpeedEl) avgSpeedEl.textContent = '0';
   if (remainingEl) remainingEl.textContent = '35:00';
-  if (distanceEl) distanceEl.textContent = '0';
   if (gpsDistanceEl) gpsDistanceEl.textContent = '0';
-  if (gpsSpeedEl) gpsSpeedEl.textContent = '0';
+  if (statusEl) statusEl.textContent = '0';
+  if (tMsEl) tMsEl.textContent = '0';
   if (consumptionEl) consumptionEl.textContent = '0';
   if (voltageEl) voltageEl.textContent = '0';
   if (currentEl) currentEl.textContent = '0';
   if (powerEl) powerEl.textContent = '0';
   if (totalEnergyEl) totalEnergyEl.textContent = '0';
   if (rpmEl) rpmEl.textContent = '0';
-  if (efficiencyEl) efficiencyEl.textContent = '0';
-  if (gpsLonEl) gpsLonEl.textContent = '0.000000';
-  if (gpsLatEl) gpsLatEl.textContent = '0.000000';
   if (lapCounterEl) lapCounterEl.textContent = '0/4';
 }
 
