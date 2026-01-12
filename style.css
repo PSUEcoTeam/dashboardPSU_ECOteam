@@ -438,12 +438,20 @@ body {
     margin: 0;
 }
 
+.metric-row.metric-row-2 {
+    grid-template-columns: repeat(2, 1fr);
+}
+
 .metric-row.metric-row-3 {
     grid-template-columns: repeat(3, 1fr);
 }
 
 .metric-row.metric-row-4 {
     grid-template-columns: repeat(4, 1fr);
+}
+
+.metric-row.metric-row-5 {
+    grid-template-columns: repeat(5, 1fr);
 }
 
 .metric-row.gps-row {
@@ -702,6 +710,10 @@ body {
     .metric-row.metric-row-4 {
         grid-template-columns: repeat(2, 1fr);
     }
+    
+    .metric-row.metric-row-5 {
+        grid-template-columns: repeat(3, 1fr);
+    }
 }
 
 @media (max-width: 768px) {
@@ -731,7 +743,8 @@ body {
     }
     
     .metric-row,
-    .metric-row.metric-row-4 {
+    .metric-row.metric-row-4,
+    .metric-row.metric-row-5 {
         grid-template-columns: 1fr;
     }
     

@@ -81,8 +81,8 @@
                         <h3>Race Telemetry</h3>
                     </div>
                     <div class="card-content">
-                        <!-- Row 1: Avg Speed, Remaining Time, GPS Distance, Status -->
-                        <div class="metric-row metric-row-4">
+                        <!-- Row 1: Avg Speed, Remaining Time, Sensor Distance, GPS Distance, Status -->
+                        <div class="metric-row metric-row-5">
                             <div class="metric-item">
                                 <div class="metric-value" id="avgSpeed">0</div>
                                 <div class="metric-unit">km/h</div>
@@ -92,6 +92,11 @@
                                 <div class="metric-value" id="remainingTime">35:00</div>
                                 <div class="metric-unit">min</div>
                                 <div class="metric-label">Remaining</div>
+                            </div>
+                            <div class="metric-item">
+                                <div class="metric-value" id="packetDistance">0</div>
+                                <div class="metric-unit">km</div>
+                                <div class="metric-label">Sensor Distance</div>
                             </div>
                             <div class="metric-item">
                                 <div class="metric-value" id="gpsDistance">0</div>
@@ -104,8 +109,8 @@
                                 <div class="metric-label">Status</div>
                             </div>
                         </div>
-                        <!-- Row 2: Consumption, Voltage, Current, t_ms -->
-                        <div class="metric-row metric-row-4">
+                        <!-- Row 2: Consumption, Voltage, Current -->
+                        <div class="metric-row metric-row-3">
                             <div class="metric-item">
                                 <div class="metric-value" id="consumption">0</div>
                                 <div class="metric-unit">Wh/km</div>
@@ -121,14 +126,9 @@
                                 <div class="metric-unit">A</div>
                                 <div class="metric-label">Current</div>
                             </div>
-                            <div class="metric-item">
-                                <div class="metric-value" id="tMs">0</div>
-                                <div class="metric-unit">ms</div>
-                                <div class="metric-label">Time (t_ms)</div>
-                            </div>
                         </div>
-                        <!-- Row 3: Power, Total Energy, RPM -->
-                        <div class="metric-row metric-row-3">
+                        <!-- Row 3: Power, Total Energy -->
+                        <div class="metric-row metric-row-2">
                             <div class="metric-item">
                                 <div class="metric-value" id="power">0</div>
                                 <div class="metric-unit">W</div>
@@ -138,11 +138,6 @@
                                 <div class="metric-value" id="totalEnergy">0</div>
                                 <div class="metric-unit">Wh</div>
                                 <div class="metric-label">Total Energy</div>
-                            </div>
-                            <div class="metric-item">
-                                <div class="metric-value" id="rpm">0</div>
-                                <div class="metric-unit">RPM</div>
-                                <div class="metric-label">RPM</div>
                             </div>
                         </div>
                     </div>

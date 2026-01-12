@@ -44,15 +44,14 @@ const mainTimerEl = el("mainTimer");
 // Telemetry card metrics
 const avgSpeedEl      = el("avgSpeed");
 const remainingEl     = el("remainingTime");
+const packetDistanceEl = el("packetDistance");
 const gpsDistanceEl   = el("gpsDistance");
 const statusEl        = el("status");
-const tMsEl           = el("tMs");
 const consumptionEl   = el("consumption");
 const voltageEl       = el("voltage");
 const currentEl       = el("current");
 const powerEl         = el("power");
 const totalEnergyEl   = el("totalEnergy");
-const rpmEl           = el("rpm");
 
 // Graph divs
 const speedGraphDiv   = el("speedGraph");
@@ -62,10 +61,10 @@ const powerGraphDiv   = el("powerGraph");
 /* ====== STATE ====== */
 const state = {
   // latest packet
-  v: 0, i: 0, p: 0, speed: 0, rpm: 0, distKmAbs: 0, lon: 0, lat: 0,
+  v: 0, i: 0, p: 0, speed: 0, distKmAbs: 0, lon: 0, lat: 0,
   energyWhAbs: 0,  // Now comes from MQTT directly
   status: 0,
-  tMs: 0,
+  tMs: 0,  // Keep for CSV logging, but not displayed
   // accumulated
   t0: null,
   lastTsMs: null,
@@ -182,7 +181,7 @@ function initMap() {
           maximumAge: 0
         }
       );
-    } else {
+      } else {
       console.warn("⚠️ Browser geolocation not supported");
       marker.bindPopup("📍 Default Location<br>Waiting for GPS data from MQTT...").openPopup();
     }
@@ -225,7 +224,7 @@ function mqttConnect() {
     client.subscribe(COACH_CUES_TOPIC, { qos: 0 }, (err) => {
       if (err) {
         console.error("Subscribe error for cues:", err);
-      } else {
+  } else {
         console.log(`📡 Subscribed to topic: ${COACH_CUES_TOPIC}`);
       }
     });
@@ -362,7 +361,6 @@ function ingestTelemetry(d) {
   state.i      = num(d.current);
   state.p      = num(d.power);
   state.speed  = num(d.speed);
-  state.rpm    = num(d.rpm);
   state.distKmAbs = num(d.distance_km);
   // Parse GPS coordinates - support multiple field name variants
   state.lon = num(d.longitude || d.lon || d.lng || d.gps_longitude);
@@ -370,7 +368,7 @@ function ingestTelemetry(d) {
   // New fields from MQTT packet
   state.energyWhAbs = num(d.energy_Wh);  // Use energy directly from MQTT
   state.status = num(d.status);
-  state.tMs = num(d.t_ms);
+  state.tMs = num(d.t_ms);  // Keep for CSV logging, but not displayed
   
   // Calculate GPS-based distance using Haversine formula (no GPS speed calculation)
   if (state.lastLat !== null && state.lastLon !== null && 
@@ -455,7 +453,6 @@ function ingestTelemetry(d) {
       current: state.i.toFixed(3),
       power: state.p.toFixed(3),
       speed: state.speed.toFixed(3),
-      rpm: state.rpm.toFixed(2),
       distance_km: state.distKmAbs.toFixed(4),
       latitude: state.lat.toFixed(6),
       longitude: state.lon.toFixed(6),
@@ -614,7 +611,7 @@ function evaluateDriverResponse() {
   
   if (isGood) {
     aiStatusCircle.classList.add('good');
-      } else {
+    } else {
     aiStatusCircle.classList.add('bad');
   }
   
@@ -646,9 +643,9 @@ function paint(){
       rafPending = true;
       requestAnimationFrame(paint);
     }
-    return;
-  }
-  
+      return;
+    }
+    
   lastPaintMs = now;
   needsUpdate = false; // We're painting now, clear the flag
 
@@ -658,9 +655,9 @@ function paint(){
   if (state.t0 === null || !state.t0) {
     // No MQTT data received yet - do not update display
     // Keep showing initial zeros from HTML/initializeDisplay()
-    return;
-  }
-
+      return;
+    }
+    
   const distKmRel   = Math.max(0, state.distKmAbs - state.baseDistKm);
   const gpsDistRel  = Math.max(0, state.gpsDistanceKm - state.baseGpsDistanceKm);
   const energyWhRel = Math.max(0, state.energyWhAbs - state.baseEnergyWh);
@@ -677,15 +674,14 @@ function paint(){
   // Telemetry metrics
   avgSpeedEl.textContent     = state.avgSpeedKmh.toFixed(1);
   remainingEl.textContent    = remainingTime();
+  if (packetDistanceEl) packetDistanceEl.textContent = distKmRel.toFixed(3);
   if (gpsDistanceEl) gpsDistanceEl.textContent = gpsDistRel.toFixed(3);
   if (statusEl) statusEl.textContent = state.status.toFixed(0);
-  if (tMsEl) tMsEl.textContent = state.tMs.toFixed(0);
   consumptionEl.textContent  = Wh_per_km.toFixed(1);
   voltageEl.textContent      = state.v.toFixed(2);
   currentEl.textContent      = state.i.toFixed(2);
   powerEl.textContent        = state.p.toFixed(0);
   totalEnergyEl.textContent  = energyWhRel.toFixed(1);
-  rpmEl.textContent          = state.rpm.toFixed(0);
 
   // Laps
   lapCounterEl.textContent = `${Math.min(state.laps, LAPS_TARGET)}/${LAPS_TARGET}`;
@@ -1046,11 +1042,11 @@ startSessionBtn?.addEventListener("click", () => {
         startSessionBtn.disabled = true;
         endSessionBtn.disabled = false;
         alert("✅ Session started! MQTT connected, coaching enabled, and logging active.");
-      } else {
+    } else {
         alert("❌ Failed to connect to MQTT. Please check your connection.");
       }
     }, 2000);
-  } else {
+    } else {
     // Already connected
     // Enable coaching engine
     publishCoachControl(true);
@@ -1067,9 +1063,9 @@ startSessionBtn?.addEventListener("click", () => {
 endSessionBtn?.addEventListener("click", () => {
   if (!logging) {
     alert("⚠️ No active logging session.");
-    return;
-  }
-  
+      return;
+    }
+    
   // Disable coaching engine
   publishCoachControl(false);
   
@@ -1185,15 +1181,14 @@ function initializeDisplay() {
   if (mainTimerEl) mainTimerEl.textContent = '00:00';
   if (avgSpeedEl) avgSpeedEl.textContent = '0';
   if (remainingEl) remainingEl.textContent = '35:00';
+  if (packetDistanceEl) packetDistanceEl.textContent = '0';
   if (gpsDistanceEl) gpsDistanceEl.textContent = '0';
   if (statusEl) statusEl.textContent = '0';
-  if (tMsEl) tMsEl.textContent = '0';
   if (consumptionEl) consumptionEl.textContent = '0';
   if (voltageEl) voltageEl.textContent = '0';
   if (currentEl) currentEl.textContent = '0';
   if (powerEl) powerEl.textContent = '0';
   if (totalEnergyEl) totalEnergyEl.textContent = '0';
-  if (rpmEl) rpmEl.textContent = '0';
   if (lapCounterEl) lapCounterEl.textContent = '0/4';
 }
 
