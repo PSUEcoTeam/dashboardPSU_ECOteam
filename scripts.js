@@ -443,9 +443,9 @@ function ingestTelemetry(d) {
     const energyWhRel = Math.max(0, state.energyWhAbs - state.baseEnergyWh);
     const gpsDistRel = Math.max(0, state.gpsDistanceKm - state.baseGpsDistanceKm);
     const kWh = energyWhRel / 1000;
-    // Use GPS distance for efficiency calculations
-    const km_per_kWh = kWh > 0 ? (gpsDistRel / kWh) : 0;
-    const Wh_per_km  = gpsDistRel > 0 ? (energyWhRel / gpsDistRel) : 0;
+    // Use sensor distance for efficiency calculations
+    const km_per_kWh = kWh > 0 ? (distKmRel / kWh) : 0;
+    const Wh_per_km  = distKmRel > 0 ? (energyWhRel / distKmRel) : 0;
 
     logData.push({
       timestamp: nowISO,
@@ -662,9 +662,9 @@ function paint(){
   const gpsDistRel  = Math.max(0, state.gpsDistanceKm - state.baseGpsDistanceKm);
   const energyWhRel = Math.max(0, state.energyWhAbs - state.baseEnergyWh);
   const kWh = energyWhRel / 1000;
-  // Use GPS distance for efficiency calculations
-  const km_per_kWh = kWh > 0 ? (gpsDistRel / kWh) : 0;
-  const Wh_per_km  = gpsDistRel > 0 ? (energyWhRel / gpsDistRel) : 0;
+  // Use sensor distance for efficiency calculations
+  const km_per_kWh = kWh > 0 ? (distKmRel / kWh) : 0;
+  const Wh_per_km  = distKmRel > 0 ? (energyWhRel / distKmRel) : 0;
 
   // Header
   mainSpdEl.textContent = state.speed.toFixed(0);
@@ -789,9 +789,9 @@ function rebuildGraphsWithData() {
   const {t, speed, current, power} = state.series;
   if (t.length === 0) return;
   
-  const gpsDist = Math.max(0, state.gpsDistanceKm - state.baseGpsDistanceKm);
+  const sensorDist = Math.max(0, state.distKmAbs - state.baseDistKm);
   const dE = state.energyWhAbs - state.baseEnergyWh;
-  state.consumption = gpsDist > 0 ? (dE / gpsDist) : 0;
+  state.consumption = sensorDist > 0 ? (dE / sensorDist) : 0;
   
   // Calculate acceleration array
   const acceleration = [];
@@ -892,8 +892,8 @@ function updateGraphs(){
   const dv = speed[latest] - speed[prevIndex];
   const dE = state.energyWhAbs - state.baseEnergyWh;
   state.acceleration = dt > 0 ? (dv / dt) : 0;
-  // Use GPS distance for consumption calculation
-  state.consumption  = gpsDist > 0 ? (dE / gpsDist) : 0;
+  // Use sensor distance for consumption calculation
+  state.consumption  = dist > 0 ? (dE / dist) : 0;
 
   // extend base graphs with null checks
   if (speedGraphDiv) {
